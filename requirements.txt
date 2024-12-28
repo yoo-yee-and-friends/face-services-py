@@ -12,5 +12,5 @@ psycopg2-binary==2.9.9
 python-multipart==0.0.19
 
 opencv-python~=4.10.0.84
-pillow~=10.2.0
+pillow~=10.3.0
 requests~=2.32.3
