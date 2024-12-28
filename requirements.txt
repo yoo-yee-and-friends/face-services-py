@@ -1,0 +1,16 @@
+dlib==19.24.6
+dropbox==12.0.2
+fastapi==0.115.6
+numpy>=1.24.0
+opencv_contrib_python==4.10.0.84
+opencv_python_headless==4.10.0.84
+python-dotenv==1.0.1
+scipy>=1.7.3
+SQLAlchemy==2.0.36
+uvicorn==0.34.0
+psycopg2-binary==2.9.9
+python-multipart==0.0.19
+
+opencv-python~=4.10.0.84
+pillow~=10.2.0
+requests~=2.32.3
