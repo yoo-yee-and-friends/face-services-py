@@ -173,4 +173,3 @@ cython_debug/
 # Ignore IDE config files
 .vscode/
 
-model/
