@@ -35,9 +35,8 @@ jobs:
       run: |
         echo "$SSH_PRIVATE_KEY" > aws-ec2-key.pem
         chmod 600 aws-ec2-key.pem
-        scp -i aws-ec2-key.pem docker-compose.yml $EC2_USER@$EC2_HOST:/home/ubuntu/
-        ssh -i aws-ec2-key.pem $EC2_USER@$EC2_HOST << 'EOF'
+        scp -o StrictHostKeyChecking=no -i aws-ec2-key.pem docker-compose.yml $EC2_USER@$EC2_HOST:/home/ubuntu/
+        ssh -o StrictHostKeyChecking=no -i aws-ec2-key.pem $EC2_USER@$EC2_HOST << 'EOF'
           docker-compose down
           docker-compose up -d
         EOF
-      
