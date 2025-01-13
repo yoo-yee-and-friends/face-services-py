@@ -8,8 +8,6 @@ class Image(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     filename = Column(String(255), nullable=False)
-    preview_url = Column(Text, nullable=False)
-    download_url = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationship with ImageVector

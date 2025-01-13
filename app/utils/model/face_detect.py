@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 
-from app.services.dropbox_service import check_and_download_models
+from app.services.s3_service import check_and_download_models
 
 check_and_download_models()
 

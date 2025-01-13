@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Images via WebSocket</title>
+</head>
+<body>
+    <h1>Upload Images via WebSocket</h1>
+    <div id="login">
+        <h2>Login</h2>
+        <input type="text" id="username" placeholder="Username">
+        <input type="password" id="password" placeholder="Password">
+        <button id="loginBtn">Login</button>
+        <p id="loginStatus"></p>
+    </div>
+    <div id="upload" style="display:none;">
+        <input type="file" id="fileInput" multiple accept="image/*">
+        <button id="uploadBtn">Upload</button>
+        <p id="status"></p>
+    </div>
+    <script>
+        const loginBtn = document.getElementById("loginBtn");
+        const loginStatus = document.getElementById("loginStatus");
+        const uploadDiv = document.getElementById("upload");
+        const loginDiv = document.getElementById("login");
+        const fileInput = document.getElementById("fileInput");
+        const uploadBtn = document.getElementById("uploadBtn");
+        const status = document.getElementById("status");
+
+        let token = null;
+
+        loginBtn.addEventListener("click", async () => {
+            const username = document.getElementById("username").value;
+            const password = document.getElementById("password").value;
+
+            const response = await fetch("http://localhost:8000/auth/token", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: new URLSearchParams({
+                    "username": username,
+                    "password": password
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                token = data.access_token;
+                loginStatus.textContent = "Login successful!";
+                loginDiv.style.display = "none";
+                uploadDiv.style.display = "block";
+                connectWebSocket();
+            } else {
+                loginStatus.textContent = "Login failed!";
+            }
+        });
+
+        function connectWebSocket() {
+            let socket = new WebSocket("ws://localhost:8000/ws/upload-images/");
+
+            socket.onopen = () => {
+                status.textContent = "Connected to the server.";
+            };
+
+            socket.onmessage = (event) => {
+                const response = JSON.parse(event.data);
+                status.textContent = "Response from server: " + JSON.stringify(response);
+            };
+
+            socket.onclose = () => {
+                status.textContent = "Disconnected from the server.";
+            };
+
+            socket.onerror = (error) => {
+                status.textContent = "WebSocket error: " + error.message;
+            };
+
+            uploadBtn.addEventListener("click", async () => {
+                if (fileInput.files.length === 0) {
+                    alert("Please select at least one file.");
+                    return;
+                }
+
+                for (const file of fileInput.files) {
+                    const fileData = await fileToBase64(file);
+                    const message = JSON.stringify({
+                        fileName: file.name,
+                        fileData: fileData,
+                        token: token
+                    });
+
+                    socket.send(message);
+                }
+
+                // Signal the end of file uploads
+                socket.send(JSON.stringify({ fileName: "END" }));
+                status.textContent = "Files uploaded successfully.";
+            });
+        }
+
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(",")[1]);
+                reader.onerror = (error) => reject(error);
+                reader.readAsDataURL(file);
+            });
+        }
+    </script>
+</body>
+</html>
