@@ -33,10 +33,10 @@ jobs:
         EC2_USER: ubuntu
         EC2_HOST: ${{ secrets.EC2_HOST }}
       run: |
-        echo "$SSH_PRIVATE_KEY" > key.pem
-        chmod 600 key.pem
-        scp -i key.pem docker-compose.yml $EC2_USER@$EC2_HOST:/home/ubuntu/
-        ssh -i key.pem $EC2_USER@$EC2_HOST << 'EOF'
+        echo "$SSH_PRIVATE_KEY" > aws-ec2-key.pem
+        chmod 600 aws-ec2-key.pem
+        scp -i aws-ec2-key.pem docker-compose.yml $EC2_USER@$EC2_HOST:/home/ubuntu/
+        ssh -i aws-ec2-key.pem $EC2_USER@$EC2_HOST << 'EOF'
           docker-compose down
           docker-compose up -d
         EOF
