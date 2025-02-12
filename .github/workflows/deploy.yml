@@ -1,42 +1,75 @@
-name: Deploy FastAPI to EC2
+name: Deploy to EC2
 
 on:
   push:
     branches:
-      - main
+      - developer
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      - name: Checkout Code
+        uses: actions/checkout@v2
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.9'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Build Docker image
-      run: |
-        docker build -t fastapi-app .
+      - name: Build Docker Image
+        run: |
+          docker build --no-cache -t zz212224236/snapgoated-services:${{ github.sha }} .
 
-    - name: Push Docker image to EC2
-      env:
-        SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-        EC2_USER: ubuntu
-        EC2_HOST: ${{ secrets.EC2_HOST }}
-      run: |
-        echo "$SSH_PRIVATE_KEY" > aws-ec2-key.pem
-        chmod 600 aws-ec2-key.pem
-        scp -o StrictHostKeyChecking=no -i aws-ec2-key.pem docker-compose.yml $EC2_USER@$EC2_HOST:/home/ubuntu/
-        ssh -o StrictHostKeyChecking=no -i aws-ec2-key.pem $EC2_USER@$EC2_HOST << 'EOF'
-          docker-compose down
-          docker-compose up -d
-        EOF
+      - name: Push Docker Image to Docker Hub
+        run: |
+          docker push zz212224236/snapgoated-services:${{ github.sha }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v0.1.9
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Update EC2 and install Docker (if not already installed)
+            sudo apt-get update -y
+            sudo apt-get install -y docker.io
+
+            # Docker login
+            echo ${{ secrets.DOCKER_PASSWORD }} | sudo docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+            
+            # Remove all Docker images
+            sudo docker rmi -f $(sudo docker images -q) || true
+
+            # Pull the latest Docker image from Docker Hub
+            sudo docker pull zz212224236/snapgoated-services:${{ github.sha }}
+
+            # Stop and remove the old container (if any)
+            sudo docker stop snapgoated-services || true
+            sudo docker rm snapgoated-services || true
+
+            # Run the new Docker container
+            sudo docker run -d --name snapgoated-services -p 8080:8080 -e DATABASE_URL=${{ secrets.DATABASE_URL }} zz212224236/snapgoated-services:${{ github.sha }}
+
+            # Optionally, clean up unused Docker images
+            sudo docker system prune -f
+
+            # Verify that the container is running
+            sudo docker ps -a
+
+            # Optionally, view logs
+            sudo docker logs snapgoated-services

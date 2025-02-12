@@ -5,15 +5,13 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, WebSock
 from starlette.datastructures import Headers
 
 from app.db.models import User
-from app.db.models.Album import Album
-from app.services.image_services import save_image_and_vectors, find_similar_faces
 from app.db.session import get_db
 from sqlalchemy.orm import Session
 import io
 from app.api.v1.auth import router as auth_router, get_current_active_user, check_staff_user
+from app.services.image_services import save_image_and_vectors
 
 router = APIRouter()
-router.include_router(auth_router, prefix="/auth", tags=["auth"])
 
 @router.post("/upload-images/")
 async def upload_images(
@@ -24,6 +22,7 @@ async def upload_images(
     try:
         response = await save_image_and_vectors(files, db)
         return response
+        return {"detail": "Images uploaded successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -55,11 +54,11 @@ async def websocket_upload_images(
             upload_file = UploadFile(filename=file_name, file=file_bytes, headers=headers)
             upload_file.size = len(file_data)  # Manually set the size
 
-            response = await save_image_and_vectors([upload_file], db)
+            # response = await save_image_and_vectors([upload_file], db)
             album.file_count += 1
             album.total_size += upload_file.size
             db.commit()
-            await websocket.send_json(response)
+            # await websocket.send_json(response)
 
     except WebSocketDisconnect:
         print("Client disconnected")
@@ -71,8 +70,8 @@ async def websocket_upload_images(
 async def search_image(file: UploadFile, db: Session = Depends(get_db)):
     try:
         print("Searching for similar faces")
-        response = await find_similar_faces(file, db)
-        return response
+        # response = await find_similar_faces(file, db)
+        # return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
