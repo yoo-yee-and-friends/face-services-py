@@ -1,5 +1,7 @@
 import re
 from datetime import timedelta, datetime
+from typing import Any, Union, Coroutine
+
 from jose import JWTError, jwt
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -8,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models.VerificationCode import VerificationCode
 from app.schemas.user import UserCreate, Token, TokenData, CheckUserExistenceInput, SendVerificationCodeInput, \
-    UserProfile
+    UserProfile, Response
 from app.security.auth import authenticate_user, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES, \
     SECRET_KEY, ALGORITHM, get_current_active_user
 
@@ -25,20 +27,22 @@ EMAIL_REGEX = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
 
 router = APIRouter()
 
-@router.post("/signup")
+@router.post("/signup", response_model=Response)
 async def signup(user: UserCreate, db: Session = Depends(get_db)):
     errors = validate_user_input(user)
     if errors:
-        raise HTTPException(
+        return Response(
+            status="error",
+            message=errors,
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=errors
         )
 
     existing_user = get_user(db, user.username)
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered " + user.username
+        return Response(
+            status="error",
+            message="Username already exists",
+            status_code=status.HTTP_400_BAD_REQUEST
         )
 
     verification = db.query(VerificationCode).filter(
@@ -49,15 +53,16 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
     ).first()
 
     if not verification:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OTP code"
+        return Response(
+            status="error",
+            message="Invalid verification code",
+            status_code=status.HTTP_400_BAD_REQUEST
         )
 
     new_user = User(
         username=user.username,
         password_hash=get_password_hash(user.password),
-        role_id=1,
+        role_id = 2,
         display_name=user.display_name,
         email=user.email,
         agree_policy=user.agree_policy,
@@ -67,50 +72,87 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-        return {"message": "User created successfully", "user": new_user.username}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred: {str(e)}"
+
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username, "userId": user.id},
+            expires_delta=access_token_expires
         )
 
-@router.post("/validate_register_form")
-async def validate_register_form(input: CheckUserExistenceInput, db: Session = Depends(get_db)):
+        return Response(
+            status="success",
+            message="User created successfully",
+            status_code=status.HTTP_201_CREATED,
+            data={"access_token": access_token}
+        )
+    except Exception as e:
+        db.rollback()
+        return Response(
+            status="error",
+            message="Failed to create user",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@router.post("/validate-register-form", response_model=Response)
+async def validate_register_form(
+        input: CheckUserExistenceInput,
+        db: Session = Depends(get_db)
+):
     if input.display_name:
         user = db.query(User).filter(User.display_name == input.display_name).first()
         if user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Display name already exists"
+            return Response(
+                status="error",
+                message="Display name already exists",
+                status_code=status.HTTP_400_BAD_REQUEST
             )
 
     if input.username:
         user = db.query(User).filter(User.username == input.username).first()
         if user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already exists"
+            return Response(
+                status="error",
+                message="Username already exists",
+                status_code=status.HTTP_400_BAD_REQUEST
             )
 
     if input.email:
         email_regex = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
         if not email_regex.match(input.email):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid email format"
+            return Response(
+                status="error",
+                message="Invalid email format",
+                status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        user = db.query(User).filter(User.email == input.email).first()
-        if user:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already exists"
-            )
+    user = db.query(User).filter(User.email == input.email).first()
+    if user:
+        return Response(
+            status="error",
+            message="Email already exists",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
 
-    return {"status": "success", "message": "No conflicts found"}
+    if not input.is_agree_policy:
+        return Response(
+            status="error",
+            message="Please agree to the privacy policy",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
 
-@router.post("/send_verification_code")
+    # Check and delete the email in the VerificationCode table
+    verification_code = db.query(VerificationCode).filter(VerificationCode.email == input.email).first()
+    if verification_code:
+        db.delete(verification_code)
+        db.commit()
+
+    return Response(
+        status="success",
+        message="Validation successful",
+        status_code=status.HTTP_200_OK
+    )
+
+@router.post("/send-verification-code", response_model=Response)
 async def send_verification_code(input: SendVerificationCodeInput, request: Request, db: Session = Depends(get_db)):
     verification_code = generate_verification_code()
 
@@ -124,9 +166,10 @@ async def send_verification_code(input: SendVerificationCodeInput, request: Requ
         # Check if the last request was made within the last 3 minutes
         time_since_last_request = datetime.utcnow() - existing_verification.updated_at
         if time_since_last_request < timedelta(minutes=3):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Please wait 3 minutes before requesting a new verification code"
+            return  Response(
+                status="error",
+                message="Please wait for 3 minutes before requesting a new verification code",
+                status_code=status.HTTP_400_BAD_REQUEST
             )
 
         # Update the existing verification code
@@ -137,9 +180,10 @@ async def send_verification_code(input: SendVerificationCodeInput, request: Requ
             db.commit()
         except Exception as e:
             db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to update verification code"
+            return Response(
+                status="error",
+                message="Failed to update verification code",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     else:
         # Create a new verification code
@@ -155,31 +199,37 @@ async def send_verification_code(input: SendVerificationCodeInput, request: Requ
             db.commit()
         except Exception as e:
             db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create verification code"
+            return Response(
+                status="error",
+                message="Failed to create verification code",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     # Send verification code to user's email
     ip_address = request.client.host
     device = request.headers.get('User-Agent')
     if not send_verification_email(input.email, verification_code, ip_address, device):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email"
+        return Response(
+            status="error",
+            message="Failed to send verification code",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
-    return {"status": "success", "message": "Verification code sent successfully. Please check your email."}
+    return Response(
+        status="success",
+        message="Verification code sent successfully. Please check your email.",
+        status_code=status.HTTP_200_OK
+    )
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Response)
 async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
         db: Session = Depends(get_db)
-) -> Token:
+) -> Union[HTTPException, Response]:
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(
+        return HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
@@ -191,14 +241,24 @@ async def login_for_access_token(
         expires_delta=access_token_expires
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    return Response(
+        status="success",
+        message="Login successful",
+        status_code=status.HTTP_200_OK,
+        data={"access_token": access_token}
+    )
 
-@router.get("/user/profile", response_model=UserProfile)
+@router.get("/user/profile", response_model=Response)
 async def get_user_profile(current_user: User = Depends(get_current_active_user)):
-    return UserProfile(
-        display_name=current_user.display_name,
-        email=current_user.email,
-        profile_picture=current_user.profile_photo  # Adjust this field based on your User model
+    return Response(
+        status="success",
+        message="User profile retrieved successfully",
+        status_code=status.HTTP_200_OK,
+        data={
+            "display_name": current_user.display_name,
+            "email": current_user.email,
+            "profile_picture": current_user.profile_photo
+        }
     )
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):

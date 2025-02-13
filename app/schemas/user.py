@@ -7,8 +7,11 @@ class UserCreate(BaseModel):
     agree_policy: bool
     display_name: str
     email: str
-    role_id: int
     otp_code: str
+
+class SignupResponse(BaseModel):
+    message: str
+    user: str
 
 class UserProfile(BaseModel):
     display_name: str
@@ -29,6 +32,13 @@ class CheckUserExistenceInput(BaseModel):
     display_name: str
     username: str
     email: EmailStr
+    is_agree_policy: bool
+
+class Response(BaseModel):
+    message: str
+    status: str
+    status_code: int
+    data: Optional[dict] = None
 
 class SendVerificationCodeInput(BaseModel):
     email: EmailStr
