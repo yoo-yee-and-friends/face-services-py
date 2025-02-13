@@ -33,8 +33,9 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
     if errors:
         return Response(
             status="error",
-            message=errors,
+            message="Validation failed",
             status_code=status.HTTP_400_BAD_REQUEST,
+            data={"errors": errors}
         )
 
     existing_user = get_user(db, user.username)
@@ -66,6 +67,7 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
         display_name=user.display_name,
         email=user.email,
         agree_policy=user.agree_policy,
+        created_at=datetime.utcnow(),
         email_verified=True
     )
     try:
@@ -75,7 +77,7 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
 
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user.username, "userId": user.id},
+            data={"sub": new_user.username, "userId": new_user.id},
             expires_delta=access_token_expires
         )
 
@@ -89,7 +91,7 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
         db.rollback()
         return Response(
             status="error",
-            message="Failed to create user",
+            message="Failed to create user " + str(e) ,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
