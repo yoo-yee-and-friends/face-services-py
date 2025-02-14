@@ -21,7 +21,7 @@ def get_public_events(
     if page < 1:
         raise HTTPException(status_code=400, detail="Page number must be greater than 0")
 
-    query = db.query(Event)
+    query = db.query(Event).filter(Event.status == True)
 
     if search:
         query = query.filter(
@@ -67,14 +67,13 @@ def get_public_events(
     }
 
 @public_router.post("/search-image")
-@public_router.post("/search-image/")
 async def search_image(
         event_id: int,
         file: UploadFile,
         db: Session = Depends(get_db)
     ):
     try:
-        event = db.query(Event).filter(Event.id == event_id).first()
+        event = db.query(Event).filter(Event.id == event_id, Event.status == True).first()
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         print("Searching for similar faces")

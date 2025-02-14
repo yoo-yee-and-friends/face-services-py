@@ -21,8 +21,8 @@ from app.schemas.user import TokenData
 
 SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login-test")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -42,14 +42,16 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def authenticate_user(db: Session, username: str, password: str):
-    user = db.query(User).filter(User.username == username).first()
+def authenticate_user(db: Session, username_or_email: str, password: str):
+    user = db.query(User).filter(
+        (User.username == username_or_email) | (User.email == username_or_email)
+    ).first()
     if not user:
         return False
     if not pwd_context.verify(password, user.password_hash):
         return False
     if not user.email_verified:
-        return False  # Add this line to check if the email is verified
+        return False
     return user
 
 def validate_password(password: str) -> bool:

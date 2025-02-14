@@ -19,19 +19,22 @@ from app.db.models.EventFolder import EventFolder
 from app.db.models.EventFolderPhoto import EventFolderPhoto
 from app.db.models.EventPhoto import EventPhoto
 from app.db.models.EventType import EventType
+from app.db.models.PhotoVector import PhotoVector
 from app.db.queries.image_queries import insert_face_vector
 from app.db.session import get_db
 from app.schemas.event import Event as EventSchema, EventCreate, Credit
+from app.schemas.user import Response
 from app.security.auth import get_current_active_user, get_ws_current_active_user
 from typing import List, Dict, Any, Optional
 
 from app.services.digital_oceans import upload_file_to_spaces, generate_presigned_url, create_folder_in_spaces, \
-    check_duplicate_name, upload_files_to_spaces
+    check_duplicate_name, upload_files_to_spaces, delete_file_from_spaces
 
 from app.db.models.User import User
 from app.db.models.Photo import Photo
 from app.db.models.Event import Event
 from app.db.models.EventCredit import EventCredit
+from app.utils.event_utils import get_event_query, paginate_query, format_event_data
 from app.utils.model.face_detect import detect_faces_with_dlib_in_event
 from app.utils.validation import validate_date_format
 
@@ -39,7 +42,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.get("/events", response_model=Dict[str, Any])
+@router.get("/events", response_model=Response)
 def get_events(
     page: int = 1,
     limit: int = 10,
@@ -49,48 +52,32 @@ def get_events(
     current_user: User = Depends(get_current_active_user)
 ):
     if page < 1:
-        raise HTTPException(status_code=400, detail="Page number must be greater than 0")
-
-    query = db.query(Event).filter(Event.user_id == current_user.id)
-
-    if status is not None:
-        query = query.filter(Event.status == status)
-
-    if search:
-        query = query.filter(
-            (Event.event_name.ilike(f"%{search}%")) |
-            (Event.location.ilike(f"%{search}%"))
+        return Response(
+            message="Page number must be greater than 0",
+            status="error",
+            status_code=400
         )
 
+    query = get_event_query(db, current_user, status, search)
     total_events = query.count()
-    skip = (page - 1) * limit
-    events = query.order_by(Event.date).offset(skip).limit(limit).all()
+    events = paginate_query(query, page, limit)
     total_pages = (total_events + limit - 1) // limit
+    events_data = format_event_data(events)
 
-    events_data = [
-        {
-            "id": event.id,
-            "event_name": event.event_name,
-            "event_type_id": event.event_type_id,
-            "date": event.date,
-            "location": event.location,
-            "status": event.status,
-            "user_id": event.user_id,
-            "publish_at": event.publish_at,
-            "cover_url": generate_presigned_url(event.cover_photo.filename) if event.cover_photo else None
-        }
-        for event in events
-    ]
+    return Response(
+        message="Events retrieved successfully",
+        data={
+            "total_events": total_events,
+            "total_pages": total_pages,
+            "current_page": page,
+            "events_per_page": limit,
+            "events": events_data
+        },
+        status="success",
+        status_code=200
+    )
 
-    return jsonable_encoder({
-        "total_events": total_events,
-        "total_pages": total_pages,
-        "current_page": page,
-        "events_per_page": limit,
-        "events": events_data
-    })
-
-@router.get("/prepare-event-data", response_model=Dict[str, Any])
+@router.get("/prepare-event-create", response_model=Response)
 def prepare_event_data(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -99,13 +86,18 @@ def prepare_event_data(
     countries = jsonable_encoder(db.query(Country).all())
     event_credit_types = jsonable_encoder(db.query(EventCreditType).all())
 
-    return {
-        "event_types": event_types,
-        "countries": countries,
-        "event_credit_types": event_credit_types
-    }
+    return Response(
+        message="Data retrieved successfully",
+        data={
+            "event_types": event_types,
+            "countries": countries,
+            "event_credit_types": event_credit_types
+        },
+        status="success",
+        status_code=200
+    )
 
-@router.post("/create-event", response_model=Dict[str, str])
+@router.post("/create-event", response_model=Response)
 def create_event(
     event_name: str = Form(...),
     event_type_id: int = Form(...),
@@ -146,27 +138,35 @@ def create_event(
             cover_photo.file.seek(0)
             file_content = cover_photo.file.read()
             cover_photo_path = upload_file_to_spaces(cover_photo, file_path)
-            cover_photo_url = f"https://snapgoated.{settings.SPACES_ENDPOINT}/{file_path}"
+            if not cover_photo_path:
+                return Response(
+                    message="Error uploading cover photo",
+                    status="error",
+                    status_code=500
+                )
+
             cover_photo_size = len(file_content)
             new_photo = Photo(
-                filename=cover_photo_path,
+                file_name=cover_photo.filename,
                 size=cover_photo_size,
-                url=cover_photo_url,
+                file_path=f"{current_user.id}/{new_event.id}/settings/",
             )
             db.add(new_photo)
             db.commit()
             db.refresh(new_photo)
 
-            # Update event with cover photo id
             new_event.cover_photo_id = new_photo.id
             db.commit()
         except Exception as e:
             db.delete(new_event)
             db.commit()
             logger.error(f"Error uploading cover photo: {e}")
-            raise HTTPException(status_code=500, detail=f"{e}")
+            return Response(
+                message="Error uploading cover photo: " + str(e),
+                status="error",
+                status_code=500
+            )
 
-        # Add credits
         for credit in credit_objects:
             new_credit = EventCredit(
                 event_id=new_event.id,
@@ -176,10 +176,19 @@ def create_event(
             db.add(new_credit)
         db.commit()
 
-        return {"message": "Event created successfully"}
+        return Response(
+            message="Event created successfully",
+            data={"event_id": new_event.id},
+            status="success",
+            status_code=200
+        )
     except Exception as e:
         logger.error(f"Error creating event: {e}")
-        raise HTTPException(status_code=500, detail=f"Error creating event: {e}")
+        return Response(
+            message="Error creating event: " + str(e),
+            status="error",
+            status_code=500
+        )
 
 @router.get("/event-details", response_model=Dict[str, Any])
 def get_event_details(
@@ -193,11 +202,19 @@ def get_event_details(
     current_user: User = Depends(get_current_active_user)
 ):
     if page < 1:
-        raise HTTPException(status_code=400, detail="Page number must be greater than 0")
+        return Response(
+            message="Page number must be greater than 0",
+            status="error",
+            status_code=400
+        )
 
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+        return Response(
+            message="Event not found",
+            status="error",
+            status_code=404
+        )
 
     # Query event folders
     folder_query = db.query(EventFolder).filter(EventFolder.event_id == event_id)
@@ -223,13 +240,13 @@ def get_event_details(
     # Query photos related to event
     photo_query = db.query(Photo).join(EventPhoto).filter(EventPhoto.event_id == event_id)
     if search:
-        photo_query = photo_query.filter(Photo.filename.ilike(f"%{search}%"))
+        photo_query = photo_query.filter(Photo.file_name.ilike(f"%{search}%"))
 
     if sort_by == "name":
         if sort_order == "asc":
-            photo_query = photo_query.order_by(Photo.filename.asc())
+            photo_query = photo_query.order_by(Photo.file_name.asc())
         else:
-            photo_query = photo_query.order_by(Photo.filename.desc())
+            photo_query = photo_query.order_by(Photo.file_name.desc())
     elif sort_by == "date":
         if sort_order == "asc":
             photo_query = photo_query.order_by(Photo.uploaded_at.asc())
@@ -242,24 +259,30 @@ def get_event_details(
         {
             "id": photo.id,
             "uploaded_at": photo.uploaded_at,
-            "filename": photo.filename.split('/')[-1],
+            "file_name": photo.file_name,
             "preview_url": generate_presigned_url(
-                f"{photo.filename.rsplit('/', 1)[0]}/preview_{photo.filename.split('/')[-1]}")
+                f"{photo.file_path}/preview_{photo.file_name}")
         }
         for photo in photos
     ]
     total_photo_pages = (total_photos + limit - 1) // limit
 
-    return {
-        "total_folders": total_folders,
-        "total_folder_pages": total_folder_pages,
-        "folders_per_page": limit,
-        "event_folders": jsonable_encoder(event_folders),
-        "total_photos": total_photos,
-        "total_photo_pages": total_photo_pages,
-        "photos_per_page": limit,
-        "photos": jsonable_encoder(photos_data)
-    }
+    return Response(
+        message="Data retrieved successfully",
+        data={
+            "event": jsonable_encoder(event),
+            "total_folders": total_folders,
+            "total_folder_pages": total_folder_pages,
+            "folders_per_page": limit,
+            "folders": jsonable_encoder(event_folders),
+            "total_photos": total_photos,
+            "total_photo_pages": total_photo_pages,
+            "photos_per_page": limit,
+            "photos": jsonable_encoder(photos_data)
+        },
+        status="success",
+        status_code=200
+    )
 
 @router.get("/folder-details", response_model=Dict[str, Any])
 def get_folder_details(
@@ -273,22 +296,29 @@ def get_folder_details(
     current_user: User = Depends(get_current_active_user)
 ):
     if page < 1:
-        raise HTTPException(status_code=400, detail="Page number must be greater than 0")
+        return Response(
+            message="Page number must be greater than 0",
+            status="error",
+            status_code=400
+        )
 
     folder = db.query(EventFolder).filter(EventFolder.id == folder_id).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        return Response(
+            message="Folder not found",
+            status="error",
+            status_code=404
+        )
 
-    # Query photos related to folder
     photo_query = db.query(Photo).join(EventFolderPhoto).filter(EventFolderPhoto.event_folder_id == folder_id)
     if search:
-        photo_query = photo_query.filter(Photo.filename.ilike(f"%{search}%"))
+        photo_query = photo_query.filter(Photo.file_name.ilike(f"%{search}%"))
 
     if sort_by == "name":
         if sort_order == "asc":
-            photo_query = photo_query.order_by(Photo.filename.asc())
+            photo_query = photo_query.order_by(Photo.file_name.asc())
         else:
-            photo_query = photo_query.order_by(Photo.filename.desc())
+            photo_query = photo_query.order_by(Photo.file_name.desc())
     elif sort_by == "date":
         if sort_order == "asc":
             photo_query = photo_query.order_by(Photo.uploaded_at.asc())
@@ -302,20 +332,93 @@ def get_folder_details(
         {
             "id": photo.id,
             "uploaded_at": photo.uploaded_at,
-            "filename": photo.filename.split('/')[-1],
+            "file_name": photo.filen_ame.split('/')[-1],
             "preview_url": generate_presigned_url(
-                f"{photo.filename.rsplit('/', 1)[0]}/preview_{photo.filename.split('/')[-1]}")
+                f"{photo.file_path}/preview_{photo.file_name}")
         }
         for photo in photos
     ]
     total_photo_pages = (total_photos + limit - 1) // limit
 
-    return {
-        "total_photos": total_photos,
-        "total_photo_pages": total_photo_pages,
-        "photos_per_page": limit,
-        "photos": jsonable_encoder(photos_data)
-    }
+    return Response(
+        message="Data retrieved successfully",
+        data={
+            "folder": jsonable_encoder(folder),
+            "total_photos": total_photos,
+            "total_photo_pages": total_photo_pages,
+            "photos_per_page": limit,
+            "photos": jsonable_encoder(photos_data)
+        },
+        status="success",
+        status_code=200
+    )
+
+@router.delete("/delete-event", response_model=Response)
+def delete_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
+    if not event:
+        return Response(
+            message="Event not found",
+            status="error",
+            status_code=404
+        )
+
+    # Delete all photos in event
+    photos = db.query(Photo).join(EventPhoto).filter(EventPhoto.event_id == event_id).all()
+    for photo in photos:
+        delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
+        delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
+
+        # Delete photo vectors
+        db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+        db.commit()
+
+        # Delete from EventPhoto
+        db.query(EventPhoto).filter(EventPhoto.photo_id == photo.id).delete()
+        db.commit()
+
+        # Delete photo from database
+        db.delete(photo)
+        db.commit()
+
+    # Delete all folders in event
+    folders = db.query(EventFolder).filter(EventFolder.event_id == event_id).all()
+    for folder in folders:
+        photos = db.query(Photo).join(EventFolderPhoto).filter(EventFolderPhoto.event_folder_id == folder.id).all()
+        for photo in photos:
+            delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
+            delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
+
+            # Delete photo vectors
+            db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+            db.commit()
+
+            # Delete from EventFolderPhoto
+            db.query(EventFolderPhoto).filter(
+                EventFolderPhoto.photo_id == photo.id,
+                EventFolderPhoto.event_folder_id == folder.id
+            ).delete()
+            db.commit()
+
+            # Delete photo from database
+            db.delete(photo)
+            db.commit()
+
+        db.delete(folder)
+        db.commit()
+
+    db.delete(event)
+    db.commit()
+
+    return Response(
+        message="Event deleted successfully",
+        status="success",
+        status_code=200
+    )
 
 @router.websocket("/ws/upload-photos")
 async def websocket_upload_images(
@@ -337,19 +440,19 @@ async def websocket_upload_images(
                 message_type = message.get('type')
 
                 if message_type == "upload_file":
-                    if 'fileName' in message and 'fileData' in message:
-                        if message['fileName'] == "END":
+                    if 'file_name' in message and 'file_data' in message:
+                        if message['file_name'] == "END":
                             break
 
                     file_path = f"{current_user.id}/{event_id}"
-                    file_name = check_duplicate_name(message['fileName'], file_path, False)
+                    file_name = check_duplicate_name(message['file_name'], file_path, False)
                     full_path = f"{current_user.id}/{event_id}/{file_name}"
-                    file_data = base64.b64decode(message['fileData'])
+                    file_data = base64.b64decode(message['file_data'])
                     file_bytes = io.BytesIO(file_data)
 
                     upload_files_to_spaces(file_bytes, full_path)
 
-                    preview_data = base64.b64decode(message['fileData'])
+                    preview_data = base64.b64decode(message['file_data'])
                     preview_bytes = io.BytesIO(preview_data)
 
                     preview_bytes.seek(0)
@@ -370,9 +473,9 @@ async def websocket_upload_images(
 
                     # Save to database
                     new_photo = Photo(
-                        filename=full_path,
+                        file_name=file_name,
+                        file_path=f"{file_path}/",
                         size=len(file_data),
-                        url=f"https://snapgoated.{settings.SPACES_ENDPOINT}/{full_path}",
                         is_detected_face=(vectors is not None),
                     )
 
@@ -401,32 +504,51 @@ async def websocket_upload_images(
                         db.commit()
                     except Exception as e:
                         db.rollback()
-                        await websocket.send_text(f"Error saving photo to database: {str(e)}")
+                        await websocket.send_json({
+                            "message": f"Error saving photo to database: {str(e)}",
+                            "status": "error",
+                            "status_code": 500
+                        })
                         await websocket.close(code=1011)
                         break
 
-                    await websocket.send_text(f"File {file_name} uploaded successfully")
+                    await websocket.send_json({
+                        "message": f"File {file_name} uploaded successfully",
+                        "status": "success",
+                        "status_code": 200,
+                        "data": {
+                            "photo_id": new_photo.id,
+                            "uploaded_at": new_photo.uploaded_at.isoformat(),
+                            "file_name": new_photo.file_name,
+                            "preview_url": generate_presigned_url(
+                                f"{new_photo.file_path}/preview_{new_photo.file_name}")
+                        }
+                    })
                 elif message_type == "upload_file_in_folder":
-                    if 'fileName' in message and 'fileData' in message and 'folderId' in message:
-                        if message['fileName'] == "END":
+                    if 'file_name' in message and 'file_data' in message and 'folder_id' in message:
+                        if message['file_name'] == "END":
                             break
 
                     event_folder = db.query(EventFolder).filter(EventFolder.event_id == event_id,
-                                                          EventFolder.id == message['folderId']).first()
+                                                          EventFolder.id == message['folder_id']).first()
                     if not event_folder:
-                        await websocket.send_text(f"Error: Folder {event_folder.name} does not exist.")
+                        await websocket.send_json({
+                            "message": "Folder not found: " + str(message['folder_id']),
+                            "status": "error",
+                            "status_code": 404
+                        })
                         await websocket.close(code=1008)
                         return
 
                     file_path = f"{current_user.id}/{event_id}/{event_folder.name}"
-                    file_name = check_duplicate_name(message['fileName'], file_path, False)
+                    file_name = check_duplicate_name(message['file_name'], file_path, False)
                     full_path = f"{current_user.id}/{event_id}/{event_folder.name}/{file_name}"
-                    file_data = base64.b64decode(message['fileData'])
+                    file_data = base64.b64decode(message['file_data'])
                     file_bytes = io.BytesIO(file_data)
 
                     upload_files_to_spaces(file_bytes, full_path)
 
-                    preview_data = base64.b64decode(message['fileData'])
+                    preview_data = base64.b64decode(message['file_data'])
                     preview_bytes = io.BytesIO(preview_data)
 
                     preview_bytes.seek(0)
@@ -447,9 +569,9 @@ async def websocket_upload_images(
 
                     # Save to database
                     new_photo = Photo(
-                        filename=full_path,
+                        file_name=file_name,
+                        file_path=f"{file_path}/",
                         size=len(file_data),
-                        url=f"https://snapgoated.{settings.SPACES_ENDPOINT}/{full_path}",
                         is_detected_face=(vectors is not None),
                     )
 
@@ -482,16 +604,34 @@ async def websocket_upload_images(
                         db.commit()
                     except Exception as e:
                         db.rollback()
-                        await websocket.send_text(f"Error saving photo to database: {str(e)}")
+                        await websocket.send_json(
+                            {
+                                "message": f"Error saving photo to database: {str(e)}",
+                                "status": "error",
+                                "status_code": 500
+                            }
+                        )
                         await websocket.close(code=1011)
                         break
 
-                    await websocket.send_text(f"File {file_name} uploaded successfully")
+                    await websocket.send_json({
+                        "message": f"File {file_name} uploaded successfully",
+                        "status": "success",
+                        "status_code": 200,
+                        "data": {
+                            "photo_id": new_photo.id,
+                            "uploaded_at": new_photo.uploaded_at.isoformat(),
+                            "folder_name": event_folder.name,
+                            "file_name": new_photo.file_name,
+                            "preview_url": generate_presigned_url(
+                                f"{new_photo.file_path}/preview_{new_photo.file_name}")
+                        }
+                    })
                 elif message_type == "create_folder":
                     folder_path = f"{current_user.id}/{event_id}"
-                    folder_name = check_duplicate_name(f"{message['folderName']}/", folder_path, True)
+                    folder_name = check_duplicate_name(f"{message['folder_name']}/", folder_path, True)
                     full_path = f"{current_user.id}/{event_id}/{folder_name}"
-                    # Create an empty file to represent the folder
+
                     create_folder_in_spaces(full_path)
                     event_folder = EventFolder(
                         event_id=event_id,
@@ -503,14 +643,174 @@ async def websocket_upload_images(
                         db.refresh(event_folder)
                     except Exception as e:
                         db.rollback()
-                        await websocket.send_text(f"Error saving folder to database: {str(e)}")
+                        await websocket.send_json({
+                            "message": f"Error creating folder: {str(e)}",
+                            "status": "error",
+                            "status_code": 500
+                        })
                         await websocket.close(code=1011)
                         break
 
-                    await websocket.send_text(f"Folder {folder_name} created successfully")
+                    await websocket.send_json(
+                        {
+                            "message": f"Folder {folder_name} created successfully",
+                            "status": "success",
+                            "status_code": 200,
+                            "data": {
+                                "folder_id": event_folder.id,
+                                "folder_name": event_folder.name
+                            }
+                        }
+                    )
+                elif message_type == "delete_file":
+                    if 'file_id' in message:
+                        file_id = message['file_id']
+                        photo = db.query(Photo).filter(Photo.id == file_id).first()
+                        if not photo:
+                            return await websocket.send_json({
+                                "message": "File not found",
+                                "status": "error",
+                                "status_code": 404,
+                                "data": {"file_id": file_id}
+                            })
+
+                        delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
+                        delete_file_from_spaces(f"{photo.file_name}preview_{photo.file_name}")
+
+                        # Update event file size and count
+                        event.total_image_count -= 1
+                        event.total_image_size -= photo.size
+                        db.commit()
+
+                        # Delete photo vectors
+                        db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+                        db.commit()
+
+                        # Delete from EventPhoto
+                        db.query(EventPhoto).filter(EventPhoto.photo_id == photo.id).delete()
+                        db.commit()
+
+                        # Delete photo from database
+                        db.delete(photo)
+                        db.commit()
+
+                        await websocket.send_json({
+                            "message": f"File {photo.file_name} deleted successfully",
+                            "status": "success",
+                            "status_code": 200,
+                            "data": {"file_id": photo.id}
+                        })
+                elif message_type == "delete_file_in_folder":
+                    if 'file_id' in message and 'folder_id' in message:
+                        file_id = message['file_id']
+                        folder_id = message['folder_id']
+                        photo = db.query(Photo).join(EventFolderPhoto).filter(
+                            EventFolderPhoto.photo_id == file_id,
+                            EventFolderPhoto.event_folder_id == folder_id
+                        ).first()
+                        if not photo:
+                            return await websocket.send_json({
+                                "message": "File not found",
+                                "status": "error",
+                                "status_code": 404,
+                                "data": {"file_id": file_id, "folder_id": folder_id}
+                            })
+
+                        delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
+                        delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
+
+                        # Update event file size and count
+                        event.total_image_count -= 1
+                        event.total_image_size -= photo.size
+                        db.commit()
+
+                        # Update event folder file size and count
+                        event_folder = db.query(EventFolder).filter(EventFolder.id == folder_id).first()
+                        if event_folder:
+                            event_folder.total_photo_count -= 1
+                            event_folder.total_photo_size -= photo.size
+                            db.commit()
+
+                        # Delete photo vectors
+                        db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+                        db.commit()
+
+                        # Delete from EventFolderPhoto
+                        db.query(EventFolderPhoto).filter(
+                            EventFolderPhoto.photo_id == photo.id,
+                            EventFolderPhoto.event_folder_id == folder_id
+                        ).delete()
+                        db.commit()
+
+
+
+                        # Delete photo from database
+                        db.delete(photo)
+                        db.commit()
+
+                        await websocket.send_json({
+                            "message": f"File {photo.file_name} deleted successfully",
+                            "status": "success",
+                            "status_code": 200,
+                            "data": {"file_id": photo.id}
+                        })
+                elif message_type == "delete_folder":
+                    if 'folder_id' in message:
+                        folder_id = message['folder_id']
+                        event_folder = db.query(EventFolder).filter(EventFolder.id == folder_id).first()
+                        if not event_folder:
+                            return await websocket.send_json({
+                                "message": "Folder not found",
+                                "status": "error",
+                                "status_code": 404,
+                                "data": {"folder_id": folder_id}
+                            })
+
+                        # Delete all photos in folder
+                        photos = db.query(Photo).join(EventFolderPhoto).filter(
+                            EventFolderPhoto.event_folder_id == folder_id
+                        ).all()
+                        for photo in photos:
+                            delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
+                            delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
+
+                            # Update event file size and count
+                            event.total_image_count -= 1
+                            event.total_image_size -= photo.size
+                            db.commit()
+
+                            # Delete photo vectors
+                            db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+                            db.commit()
+
+                            # Delete from EventFolderPhoto
+                            db.query(EventFolderPhoto).filter(
+                                EventFolderPhoto.photo_id == photo.id,
+                                EventFolderPhoto.event_folder_id == folder_id
+                            ).delete()
+                            db.commit()
+
+                            # Delete photo from database
+                            db.delete(photo)
+                            db.commit()
+
+                        # Delete folder
+                        db.delete(event_folder)
+                        db.commit()
+
+                        await websocket.send_json({
+                            "message": f"Folder {event_folder.name} deleted successfully",
+                            "status": "success",
+                            "status_code": 200,
+                            "data": {"folder_id": event_folder.id}
+                        })
 
             except asyncio.TimeoutError:
-                await websocket.send_text("No activity for 5 minutes, closing connection.")
+                await websocket.send_json({
+                    "message": "No activity for 5 minutes, closing connection.",
+                    "status": "error",
+                    "status_code": 408
+                })
                 await websocket.close(code=1000)
                 break
 
@@ -518,6 +818,10 @@ async def websocket_upload_images(
         print("Client disconnected")
     except Exception as e:
         logger.error(f"Error during file upload: {str(e)}")
-        await websocket.send_text(f"Error: {str(e)}")
+        await websocket.send_json({
+            "message": f"Error during file upload: {str(e)}",
+            "status": "error",
+            "status_code": 500
+        })
         await websocket.close(code=1011)
 

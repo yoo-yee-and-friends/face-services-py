@@ -1,18 +1,16 @@
 import re
 from datetime import timedelta, datetime
-from typing import Any, Union, Coroutine
 
-from jose import JWTError, jwt
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordRequestForm
 from passlib.context import CryptContext
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.db.models.VerificationCode import VerificationCode
-from app.schemas.user import UserCreate, Token, TokenData, CheckUserExistenceInput, SendVerificationCodeInput, \
-    UserProfile, Response
-from app.security.auth import authenticate_user, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES, \
-    SECRET_KEY, ALGORITHM, get_current_active_user
+from app.schemas.user import UserCreate, Token, CheckUserExistenceInput, SendVerificationCodeInput, Response
+from app.security.auth import authenticate_user, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES, get_current_active_user
 
 from app.db.models.User import User
 from app.db.session import get_db
@@ -22,9 +20,8 @@ from app.utils.validation import validate_user_input, generate_verification_code
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 EMAIL_REGEX = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
-
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter()
 
 @router.post("/signup", response_model=Response)
@@ -155,6 +152,7 @@ async def validate_register_form(
     )
 
 @router.post("/send-verification-code", response_model=Response)
+@limiter.limit("3/5minutes")
 async def send_verification_code(input: SendVerificationCodeInput, request: Request, db: Session = Depends(get_db)):
     verification_code = generate_verification_code()
 
@@ -228,10 +226,10 @@ async def send_verification_code(input: SendVerificationCodeInput, request: Requ
 async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
         db: Session = Depends(get_db)
-) -> Union[HTTPException, Response]:
+) -> Response:
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        return HTTPException(
+        raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
@@ -247,8 +245,30 @@ async def login_for_access_token(
         status="success",
         message="Login successful",
         status_code=status.HTTP_200_OK,
-        data={"access_token": access_token}
+        data={"access_token": access_token, "token_type": "bearer"}
     )
+
+@router.post("/login-test", response_model=Token)
+async def login_for_test(
+        form_data: OAuth2PasswordRequestForm = Depends(),
+        db: Session = Depends(get_db)
+) -> Token:
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "userId": user.id},
+        expires_delta=access_token_expires
+    )
+
+    return Token(access_token=access_token, token_type="bearer")
+
 
 @router.get("/user/profile", response_model=Response)
 async def get_user_profile(current_user: User = Depends(get_current_active_user)):
@@ -263,31 +283,3 @@ async def get_user_profile(current_user: User = Depends(get_current_active_user)
         }
     )
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
-    user = get_user(db, username=token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
-
-def get_current_active_user(current_user: User = Depends(get_current_user)):
-    if current_user.role.name not in ["general_user"]:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
-
-def check_staff_user(current_user: User = Depends(get_current_user)):
-    if current_user.role.name in ["guest", "general_user"]:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user

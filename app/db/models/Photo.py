@@ -11,11 +11,11 @@ class Photo(Base):
     __tablename__ = 'photos'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    filename = Column(String(255), nullable=False)
+    file_name = Column(String(255), nullable=False)
     uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=True)
     photo_metadata = Column(JSON, nullable=True)
     description = Column(Text, nullable=True)
-    url = Column(Text, nullable=False)
+    file_path = Column(Text, nullable=False)
     size = Column(BigInteger, default=0, nullable=False)
     is_detected_face = Column(Boolean, default=False, nullable=False)
 

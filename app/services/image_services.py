@@ -6,6 +6,7 @@ from typing import List
 from fastapi import UploadFile, File, HTTPException
 from sqlalchemy.exc import OperationalError
 
+from app.schemas.user import Response
 from app.services.digital_oceans import generate_presigned_url
 # from app.services.s3_service import upload_to_s3, generate_presigned_url
 from app.utils.model.face_detect import process_image_main_face, process_image_faces
@@ -77,7 +78,7 @@ async def find_similar_faces(event_id, file, db: Session):
     matches_faces = []
     try:
         print("Processing image:", file.filename)
-        threshold = 0.80
+        threshold = 0.94
 
         query_vector = await process_image_main_face(file)  # Assume main face
         results = get_images_with_vectors(db, event_id)
@@ -105,7 +106,12 @@ async def find_similar_faces(event_id, file, db: Session):
         error_line = traceback_lines[-2]
         print(f"Error occurred at: {error_line}")
 
-    return {
-            "message": "Matching images found",
+    message = "Matching images found" if matches_faces else "No matching images found"
+    return Response(
+        message=message,
+        status_code=200,
+        status="Success",
+        data={
             "matches": matches_faces
-            }
+        }
+    )

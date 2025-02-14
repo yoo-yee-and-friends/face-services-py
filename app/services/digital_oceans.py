@@ -103,3 +103,17 @@ def generate_presigned_url(file_path: str, expiration: int = 3600):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating presigned URL: {e}")
 
+def delete_file_from_spaces(file_path: str):
+    s3_client = boto3.client('s3',
+                             aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
+                             aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY,
+                             endpoint_url=settings.SPACES_ENDPOINT)
+    try:
+        s3_client.delete_object(Bucket='snapgoated', Key=file_path)
+        return file_path
+    except NoCredentialsError:
+        logger.error("Credentials not available")
+        raise HTTPException(status_code=500, detail="File deletion failed")
+    except Exception as e:
+        logger.error(f"Error deleting file: {e}")
+
