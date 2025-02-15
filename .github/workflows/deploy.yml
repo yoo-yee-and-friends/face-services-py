@@ -63,7 +63,7 @@ jobs:
               sudo docker rm snapgoated-services || true
               
               # Run the new Docker container
-              sudo docker run -d --name snapgoated-services -p 8000:8000 zz212224236/snapgoated-services:${{ github.sha }}
+              sudo docker run -d --name snapgoated-services --restart unless-stopped -p 8000:8000 zz212224236/snapgoated-services:${{ github.sha }}
               
               # Optionally, clean up unused Docker images
               sudo docker system prune -f

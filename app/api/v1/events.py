@@ -431,14 +431,19 @@ async def websocket_upload_images(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_ws_current_active_user)
 ):
+    logger.info(f"User {current_user.id} connected to websocket for event {event_id}.")
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
+    logger.info(f"Event: {event}")
     if not event:
         await websocket.close(code=1008)  # Close with policy violation code
         return
+    logger.info(f"Event {event_id} found for user {current_user.id}.")
     await websocket.accept()
+    logger.info(f"Websocket connection accepted for event {event_id}.")
     try:
         while True:
             try:
+                logger.info("Waiting for data...")
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=300)
                 logger.info(f"Received data: {data}")
                 message = json.loads(data)
