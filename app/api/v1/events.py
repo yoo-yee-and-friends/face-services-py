@@ -362,6 +362,15 @@ def delete_event(
             status_code=404
         )
 
+    # Delete cover photo if it exists
+    if event.cover_photo_id:
+        cover_photo = db.query(Photo).filter(Photo.id == event.cover_photo_id).first()
+        if cover_photo:
+            delete_file_from_spaces(f"{cover_photo.file_path}{cover_photo.file_name}")
+            delete_file_from_spaces(f"{cover_photo.file_path}preview_{cover_photo.file_name}")
+            db.delete(cover_photo)
+            db.commit()
+
     # Delete all photos in event
     photos = db.query(Photo).join(EventPhoto).filter(EventPhoto.event_id == event_id).all()
     for photo in photos:
