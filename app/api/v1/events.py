@@ -116,7 +116,14 @@ def create_event(
         credit_list = json.loads(credits)
         credit_objects = [Credit(**credit) for credit in credit_list]
 
-        validate_date_format(date)
+        is_validate_date_format = validate_date_format(date)
+        if not is_validate_date_format:
+            return Response(
+                message="Invalid date format. Please use YYYY-MM-DD",
+                status="error",
+                status_code=400
+            )
+
         event_date = datetime.strptime(date, "%Y-%m-%d")
         publish_at = datetime.utcnow() if status else None
         new_event = Event(

@@ -4,6 +4,8 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from app.db.models.Event import Event
 from app.services.digital_oceans import generate_presigned_url
+from app.utils.validation import format_size
+
 
 def get_event_query(db: Session, current_user, status: Optional[bool], search: Optional[str]):
     query = db.query(Event).filter(Event.user_id == current_user.id)
@@ -32,6 +34,10 @@ def format_event_data(events: List[Event]):
             "status": event.status,
             "user_id": event.user_id,
             "publish_at": event.publish_at,
+            "created_at": event.created_at,
+            "updated_at": event.updated_at,
+            "total_image_count": event.total_image_count,
+            "total_image_size":format_size(event.total_image_size),
             "cover_url": generate_presigned_url(f"{event.cover_photo.file_path}{event.cover_photo.file_name}") if event.cover_photo else None
         }
         for event in events

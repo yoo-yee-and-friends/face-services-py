@@ -38,5 +38,16 @@ def validate_password(password: str) -> bool:
 def validate_date_format(date_str: str):
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
+        return True
     except ValueError:
-        raise HTTPException(detail="Invalid date format. Expected format: yyyy-mm-dd")
+        return False
+
+def format_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    elif size < 1024 * 1024:
+        return f"{size / 1024:.2f} KB"
+    elif size < 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024):.2f} MB"
+    else:
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
