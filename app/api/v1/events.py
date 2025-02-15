@@ -440,6 +440,7 @@ async def websocket_upload_images(
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=300)
+                logger.info(f"Received data: {data}")
                 message = json.loads(data)
                 message_type = message.get('type')
 
