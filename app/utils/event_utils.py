@@ -1,4 +1,6 @@
 from typing import Optional, List
+
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from app.db.models.Event import Event
 from app.services.digital_oceans import generate_presigned_url
@@ -12,6 +14,7 @@ def get_event_query(db: Session, current_user, status: Optional[bool], search: O
             (Event.event_name.ilike(f"%{search}%")) |
             (Event.location.ilike(f"%{search}%"))
         )
+    query = query.order_by(desc(Event.updated_at))
     return query
 
 def paginate_query(query, page: int, limit: int):

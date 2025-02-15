@@ -176,12 +176,7 @@ def create_event(
             db.add(new_credit)
         db.commit()
 
-        return Response(
-            message="Event created successfully",
-            data={"event_id": new_event.id},
-            status="success",
-            status_code=200
-        )
+        return get_events(db=db, current_user=current_user)
     except Exception as e:
         logger.error(f"Error creating event: {e}")
         return Response(
