@@ -73,3 +73,21 @@ jobs:
               
               # Optionally, view logs
               sudo docker logs snapgoated-services
+
+              
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_COMMIT: ${{ github.event.head_commit.message }}
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_RUN_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          GITHUB_SUCCESS="true"
+          
+          PAYLOAD=$(echo -e "🚀 **Deployment Status: Compleated**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | jq -R --slurp '{content: .}')
+          
+          curl -H "Content-Type: application/json" \
+               -X POST \
+               -d "$PAYLOAD" \
+               $DISCORD_WEBHOOK
