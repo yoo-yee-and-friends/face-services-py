@@ -446,6 +446,7 @@ async def websocket_upload_images(
                 if message_type == "upload_file":
                     if 'file_name' in message and 'file_data' in message:
                         if message['file_name'] == "END":
+                            logger.info("Received END signal, stopping upload.")
                             break
 
                     file_path = f"{current_user.id}/{event_id}"
@@ -454,6 +455,7 @@ async def websocket_upload_images(
                     file_data = base64.b64decode(message['file_data'])
                     file_bytes = io.BytesIO(file_data)
 
+                    logger.info(f"Uploading file {file_name} to {full_path}.")
                     upload_files_to_spaces(file_bytes, full_path)
 
                     preview_data = base64.b64decode(message['file_data'])
@@ -466,16 +468,16 @@ async def websocket_upload_images(
                         image.thumbnail(max_size, Image.LANCZOS)
 
                         preview_bytes = io.BytesIO()
-                        image.save(preview_bytes, format="WEBP", quality=50, optimize=True)  # ลด quality ลงให้มากขึ้น
+                        image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
                         preview_path = f"{current_user.id}/{event_id}/preview_{file_name}"
                         preview_bytes.seek(0)
 
+                        logger.info(f"Uploading preview for {file_name} to {preview_path}.")
                         upload_files_to_spaces(preview_bytes, preview_path)
 
                     face_detected_bytes = io.BytesIO(file_data)
                     vectors = await detect_faces_with_dlib_in_event(face_detected_bytes, False)
 
-                    # Save to database
                     new_photo = Photo(
                         file_name=file_name,
                         file_path=f"{file_path}/",
@@ -487,12 +489,14 @@ async def websocket_upload_images(
                         db.add(new_photo)
                         db.commit()
                         db.refresh(new_photo)
+                        logger.info(f"Photo {file_name} saved to database with ID {new_photo.id}.")
 
                         if vectors is not None:
                             for vector in vectors:
                                 if isinstance(vector, np.ndarray):
                                     vector = vector.tolist()
                                 insert_face_vector(db, new_photo.id, json.dumps(vector))
+                            logger.info(f"Face vectors for photo {file_name} inserted into database.")
 
                         event_photo = EventPhoto(
                             event_id=event_id,
@@ -506,8 +510,10 @@ async def websocket_upload_images(
                         event.total_image_size += len(file_data)
                         event.updated_at = datetime.utcnow()
                         db.commit()
+                        logger.info(f"Event {event_id} updated with new photo {file_name}.")
                     except Exception as e:
                         db.rollback()
+                        logger.error(f"Error saving photo {file_name} to database: {str(e)}")
                         await websocket.send_json({
                             "message": f"Error saving photo to database: {str(e)}",
                             "status": "error",
@@ -528,6 +534,7 @@ async def websocket_upload_images(
                                 f"{new_photo.file_path}/preview_{new_photo.file_name}")
                         }
                     })
+                    logger.info(f"File {file_name} upload process completed successfully.")
                 elif message_type == "upload_file_in_folder":
                     if 'file_name' in message and 'file_data' in message and 'folder_id' in message:
                         if message['file_name'] == "END":
