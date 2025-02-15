@@ -439,29 +439,29 @@ async def websocket_upload_images(
     try:
         while True:
             try:
-                logger.info("Waiting for data...")
+                print("Waiting for data...")
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=300)
-                logger.info(f"Received data: {data}")
+                print(f"Received data: {data}")
                 message = json.loads(data)
                 message_type = message.get('type')
 
                 if message_type == "upload_file":
-                    logger.info("Received upload file message.")
+                    print("Received upload file message.")
                     if 'file_name' in message and 'file_data' in message:
                         if message['file_name'] == "END":
-                            logger.info("Received END signal, stopping upload.")
+                            print("Received END signal, stopping upload.")
                             break
-                    logger.info("Processing file upload.")
+                    print("Processing file upload.")
                     file_path = f"{current_user.id}/{event_id}"
-                    logger.info(f"File path: {file_path}")
+                    print(f"File path: {file_path}")
                     file_name = check_duplicate_name(message['file_name'], file_path, False)
-                    logger.info(f"File name: {file_name}")
+                    print(f"File name: {file_name}")
                     full_path = f"{current_user.id}/{event_id}/{file_name}"
-                    logger.info(f"Full path: {full_path}")
+                    print(f"Full path: {full_path}")
                     file_data = base64.b64decode(message['file_data'])
                     file_bytes = io.BytesIO(file_data)
 
-                    logger.info(f"Uploading file {file_name} to {full_path}.")
+                    print(f"Uploading file {file_name} to {full_path}.")
                     upload_files_to_spaces(file_bytes, full_path)
 
                     preview_data = base64.b64decode(message['file_data'])
@@ -478,7 +478,7 @@ async def websocket_upload_images(
                         preview_path = f"{current_user.id}/{event_id}/preview_{file_name}"
                         preview_bytes.seek(0)
 
-                        logger.info(f"Uploading preview for {file_name} to {preview_path}.")
+                        print(f"Uploading preview for {file_name} to {preview_path}.")
                         upload_files_to_spaces(preview_bytes, preview_path)
 
                     face_detected_bytes = io.BytesIO(file_data)
