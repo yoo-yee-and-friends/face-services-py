@@ -431,15 +431,11 @@ async def websocket_upload_images(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_ws_current_active_user)
 ):
-    logger.info(f"User {current_user.id} connected to websocket for event {event_id}.")
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
-    logger.info(f"Event: {event}")
     if not event:
         await websocket.close(code=1008)  # Close with policy violation code
         return
-    logger.info(f"Event {event_id} found for user {current_user.id}.")
     await websocket.accept()
-    logger.info(f"Websocket connection accepted for event {event_id}.")
     try:
         while True:
             try:
@@ -450,14 +446,18 @@ async def websocket_upload_images(
                 message_type = message.get('type')
 
                 if message_type == "upload_file":
+                    logger.info("Received upload file message.")
                     if 'file_name' in message and 'file_data' in message:
                         if message['file_name'] == "END":
                             logger.info("Received END signal, stopping upload.")
                             break
-
+                    logger.info("Processing file upload.")
                     file_path = f"{current_user.id}/{event_id}"
+                    logger.info(f"File path: {file_path}")
                     file_name = check_duplicate_name(message['file_name'], file_path, False)
+                    logger.info(f"File name: {file_name}")
                     full_path = f"{current_user.id}/{event_id}/{file_name}"
+                    logger.info(f"Full path: {full_path}")
                     file_data = base64.b64decode(message['file_data'])
                     file_bytes = io.BytesIO(file_data)
 
