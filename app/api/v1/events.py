@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 
 import numpy as np
+import psutil
 from PIL import Image
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.encoders import jsonable_encoder
@@ -439,31 +440,23 @@ async def websocket_upload_images(
     try:
         while True:
             try:
-                print("Waiting for data...")
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=300)
-                print(f"Received data: {data}")
                 message = json.loads(data)
-                print(f"Message1")
                 message_type = message.get('type')
-                print(f"Message2")
+
+                memory_info = psutil.virtual_memory()
 
                 if message_type == "upload_file":
-                    print("Received upload file message.")
                     if 'file_name' in message and 'file_data' in message:
                         if message['file_name'] == "END":
                             print("Received END signal, stopping upload.")
                             break
-                    print("Processing file upload.")
                     file_path = f"{current_user.id}/{event_id}"
-                    print(f"File path: {file_path}")
                     file_name = check_duplicate_name(message['file_name'], file_path, False)
-                    print(f"File name: {file_name}")
                     full_path = f"{current_user.id}/{event_id}/{file_name}"
-                    print(f"Full path: {full_path}")
                     file_data = base64.b64decode(message['file_data'])
                     file_bytes = io.BytesIO(file_data)
 
-                    print(f"Uploading file {file_name} to {full_path}.")
                     upload_files_to_spaces(file_bytes, full_path)
 
                     preview_data = base64.b64decode(message['file_data'])
@@ -480,7 +473,6 @@ async def websocket_upload_images(
                         preview_path = f"{current_user.id}/{event_id}/preview_{file_name}"
                         preview_bytes.seek(0)
 
-                        print(f"Uploading preview for {file_name} to {preview_path}.")
                         upload_files_to_spaces(preview_bytes, preview_path)
 
                     face_detected_bytes = io.BytesIO(file_data)
@@ -497,7 +489,6 @@ async def websocket_upload_images(
                         db.add(new_photo)
                         db.commit()
                         db.refresh(new_photo)
-                        logger.info(f"Photo {file_name} saved to database with ID {new_photo.id}.")
 
                         if vectors is not None:
                             for vector in vectors:
@@ -518,7 +509,6 @@ async def websocket_upload_images(
                         event.total_image_size += len(file_data)
                         event.updated_at = datetime.utcnow()
                         db.commit()
-                        logger.info(f"Event {event_id} updated with new photo {file_name}.")
                     except Exception as e:
                         db.rollback()
                         logger.error(f"Error saving photo {file_name} to database: {str(e)}")
