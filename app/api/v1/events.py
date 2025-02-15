@@ -665,7 +665,10 @@ async def websocket_upload_images(
                 elif message_type == "delete_file":
                     if 'file_id' in message:
                         file_id = message['file_id']
-                        photo = db.query(Photo).filter(Photo.id == file_id).first()
+                        photo = db.query(Photo).join(EventPhoto).filter(
+                            Photo.id == file_id,
+                            EventPhoto.event_id == event_id
+                        ).first()
                         if not photo:
                             return await websocket.send_json({
                                 "message": "File not found",
@@ -704,8 +707,9 @@ async def websocket_upload_images(
                     if 'file_id' in message and 'folder_id' in message:
                         file_id = message['file_id']
                         folder_id = message['folder_id']
-                        photo = db.query(Photo).join(EventFolderPhoto).filter(
-                            EventFolderPhoto.photo_id == file_id,
+                        photo = db.query(Photo).join(EventPhoto).join(EventFolderPhoto).filter(
+                            Photo.id == file_id,
+                            EventPhoto.event_id == event_id,
                             EventFolderPhoto.event_folder_id == folder_id
                         ).first()
                         if not photo:
@@ -757,7 +761,10 @@ async def websocket_upload_images(
                 elif message_type == "delete_folder":
                     if 'folder_id' in message:
                         folder_id = message['folder_id']
-                        event_folder = db.query(EventFolder).filter(EventFolder.id == folder_id).first()
+                        event_folder = db.query(EventFolder).filter(
+                            EventFolder.id == folder_id,
+                            EventFolder.event_id == event_id
+                        ).first()
                         if not event_folder:
                             return await websocket.send_json({
                                 "message": "Folder not found",
