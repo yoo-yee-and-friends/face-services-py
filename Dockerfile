@@ -19,15 +19,17 @@ RUN apt-get update && apt-get install -y \
 # คัดลอกไฟล์ requirements.txt ไปยัง container
 COPY requirements.txt .
 
-# Upgrade pip และติดตั้ง dependencies
+# Upgrade pip
 RUN python -m pip install --upgrade pip
+
+# ติดตั้ง dependencies จาก requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# คัดลอกโค้ดโปรเจกต์ทั้งหมดไปยัง container (คัดลอกหลังจากติดตั้ง dependencies)
+# คัดลอกโค้ดโปรเจกต์ทั้งหมดไปยัง container
 COPY . .
 
-# ระบุ port ที่ container จะใช้งาน
+# ระบุ port ที่ container จะใช้งาน (กรณี FastAPI)
 EXPOSE 8000
 
 # คำสั่งเริ่มต้นเมื่อ container รัน (ใช้ uvicorn สำหรับ FastAPI)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
