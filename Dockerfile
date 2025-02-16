@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     libx11-dev \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # คัดลอกไฟล์ requirements.txt ไปยัง container
 COPY requirements.txt .
