@@ -13,7 +13,6 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import false
 from sqlalchemy.orm import Session
 
-from app.config.logging_config import setup_logging
 from app.config.settings import settings
 from app.db.models.Country import Country
 from app.db.models.EventCreditType import EventCreditType
