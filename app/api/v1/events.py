@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import false
 from sqlalchemy.orm import Session
 
+from app.config.logging_config import setup_logging
 from app.config.settings import settings
 from app.db.models.Country import Country
 from app.db.models.EventCreditType import EventCreditType
@@ -97,7 +98,6 @@ def prepare_event_data(
         status="success",
         status_code=200
     )
-
 @router.post("/create-event", response_model=Response)
 def create_event(
     event_name: str = Form(...),
@@ -193,7 +193,7 @@ def create_event(
             status_code=500
         )
 
-@router.get("/event-details", response_model=Dict[str, Any])
+@router.get("/event-details", response_model=Response)
 def get_event_details(
     event_id: int,
     page: int = 1,
@@ -264,7 +264,8 @@ def get_event_details(
             "uploaded_at": photo.uploaded_at,
             "file_name": photo.file_name,
             "preview_url": generate_presigned_url(
-                f"{photo.file_path}/preview_{photo.file_name}")
+                f"{photo.file_path}/preview_{photo.file_name}"
+            )
         }
         for photo in photos
     ]
@@ -450,8 +451,6 @@ async def websocket_upload_images(
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=300)
                 message = json.loads(data)
                 message_type = message.get('type')
-
-                memory_info = psutil.virtual_memory()
 
                 if message_type == "upload_file":
                     if 'file_name' in message and 'file_data' in message:
