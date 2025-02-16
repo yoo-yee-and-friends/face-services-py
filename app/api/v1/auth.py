@@ -35,6 +35,13 @@ async def signup(user: UserCreate, db: Session = Depends(get_db)):
             data={"errors": errors}
         )
 
+    if len(user.username) < 8:
+        return Response(
+            status="error",
+            message="Username must be at least 8 characters long",
+            status_code=status.HTTP_400_BAD_REQUEST
+        )
+
     existing_user = get_user(db, user.username)
     if existing_user:
         return Response(
