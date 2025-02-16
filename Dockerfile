@@ -12,24 +12,22 @@ RUN apt-get update && apt-get install -y \
     libopenblas-dev \
     liblapack-dev \
     libx11-dev \
-    libgl1-mesa-glx \ 
+    libgl1-mesa-glx \
     libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # คัดลอกไฟล์ requirements.txt ไปยัง container
 COPY requirements.txt .
 
-# Upgrade pip
+# Upgrade pip และติดตั้ง dependencies
 RUN python -m pip install --upgrade pip
-
-# ติดตั้ง dependencies จาก requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# คัดลอกโค้ดโปรเจกต์ทั้งหมดไปยัง container
+# คัดลอกโค้ดโปรเจกต์ทั้งหมดไปยัง container (คัดลอกหลังจากติดตั้ง dependencies)
 COPY . .
 
-# ระบุ port ที่ container จะใช้งาน (กรณี FastAPI)
+# ระบุ port ที่ container จะใช้งาน
 EXPOSE 8000
 
 # คำสั่งเริ่มต้นเมื่อ container รัน (ใช้ uvicorn สำหรับ FastAPI)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
