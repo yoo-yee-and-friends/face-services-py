@@ -3,12 +3,13 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from app.db.session import get_db
 from app.db.models.Event import Event
+from app.schemas.user import Response
 from app.services.digital_oceans import generate_presigned_url
 from app.services.image_services import find_similar_faces
 
 public_router = APIRouter()
 
-@public_router.get("/public-events", response_model=Dict[str, Any])
+@public_router.get("/public-events", response_model=Response)
 def get_public_events(
     page: int = 1,
     limit: int = 10,
@@ -19,7 +20,11 @@ def get_public_events(
     db: Session = Depends(get_db)
 ):
     if page < 1:
-        raise HTTPException(status_code=400, detail="Page number must be greater than 0")
+        return Response(
+            message="Page number must be greater than 0",
+            status_code=400,
+            status="error"
+        )
 
     query = db.query(Event).filter(Event.status == True)
 
@@ -53,18 +58,23 @@ def get_public_events(
             "status": event.status,
             "user_id": event.user_id,
             "publish_at": event.publish_at,
-            "cover_url": generate_presigned_url(event.cover_photo.filename) if event.cover_photo else None
+            "cover_url": generate_presigned_url(event.cover_photo.file_name) if event.cover_photo else None
         }
         for event in events
     ]
 
-    return {
-        "total_events": total_events,
-        "total_pages": total_pages,
-        "current_page": page,
-        "events_per_page": limit,
-        "events": events_data
-    }
+    return Response(
+        message="Events fetched successfully",
+        status_code=200,
+        status="success",
+        data={
+            "total_events": total_events,
+            "total_pages": total_pages,
+            "current_page": page,
+            "events_per_page": limit,
+            "events": events_data
+        }
+    )
 
 @public_router.post("/search-image")
 async def search_image(
