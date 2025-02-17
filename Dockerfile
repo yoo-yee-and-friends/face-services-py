@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
 # คัดลอกไฟล์ requirements.txt ไปยัง container
 COPY requirements.txt .
 
-# Upgrade pip
+# Upgrade pip_
 RUN python -m pip install --upgrade pip
 
 # ติดตั้ง dependencies จาก requirements.txt
