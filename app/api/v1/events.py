@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+import time
 from datetime import datetime
 
 import numpy as np
@@ -444,12 +445,16 @@ async def websocket_upload_images(
         await websocket.close(code=1008)  # Close with policy violation code
         return
     await websocket.accept()
+    last_ping_time = time.time()
+    ping_interval = 300  # 5 minutes
     try:
         while True:
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=300)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=ping_interval)
                 message = json.loads(data)
                 message_type = message.get('type')
+
+                last_ping_time = time.time()
 
                 if message_type == "upload_file":
                     if 'file_name' in message and 'file_data' in message:
@@ -825,6 +830,10 @@ async def websocket_upload_images(
                             "status_code": 200,
                             "data": {"folder_id": event_folder.id}
                         })
+
+                if time.time() - last_ping_time >= ping_interval:
+                    await websocket.send_json({"type": "ping"})
+                    last_ping_time = time.time()
 
             except asyncio.TimeoutError:
                 await websocket.send_json({
