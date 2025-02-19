@@ -91,7 +91,7 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
                     'Data': subject,
                 },
             },
-            Source='snapgoated@gmail.com',
+            Source='no-reply@snapgoated.com',
         )
     except (BotoCoreError, ClientError) as e:
         print(f"Error sending email: {e}")
