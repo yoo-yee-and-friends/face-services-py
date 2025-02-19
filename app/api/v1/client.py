@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
+
+from app.db.models import EventType, City
 from app.db.session import get_db
 from app.db.models.Event import Event
 from app.schemas.user import Response
@@ -74,6 +77,49 @@ def get_public_events(
             "events_per_page": limit,
             "events": events_data
         }
+    )
+
+@public_router.get("/public-event-data", response_model=Response)
+def get_public_event_data(
+    db: Session = Depends(get_db)
+):
+    event_types = jsonable_encoder(db.query(EventType.EventType).all())
+    cities = jsonable_encoder(db.query(City.City).all())
+
+    return Response(
+        message="Data retrieved successfully",
+        data={
+            "event_types": event_types,
+            "cities": cities
+        },
+        status="success",
+        status_code=200
+    )
+
+@public_router.get("/public-event", response_model=Response)
+def get_public_event(
+    event_id: int,
+    db: Session = Depends(get_db)
+):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    event_data = {
+        "event_id": event.id,
+        "event_name": event.event_name,
+        "event_type": event.event_type.name,
+        "event_cover_photo": generate_presigned_url(
+            f"{event.cover_photo.file_path}/preview_{event.cover_photo.file_name}"
+        ),
+        "date": event.date
+    }
+
+    return Response(
+        message="Event retrieved successfully",
+        data=event_data,
+        status="success",
+        status_code=200
     )
 
 @public_router.post("/search-image")
