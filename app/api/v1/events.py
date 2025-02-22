@@ -4,9 +4,13 @@ import concurrent
 import io
 import json
 import logging
+import multiprocessing
 import threading
 import time
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import closing
 from datetime import datetime
+from functools import partial
 from http.client import responses
 
 import numpy as np
@@ -48,6 +52,26 @@ from app.utils.validation import validate_date_format
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+class UploadProgressLogger:
+    def __init__(self, total_files: int, event_id: int):
+        self.total_files = total_files
+        self.processed_files = 0
+        self.successful_files = 0
+        self.failed_files = 0
+        self.event_id = event_id
+        self.start_time = time.time()
+
+    def to_dict(self) -> dict:
+        return {
+            "total_files": self.total_files,
+            "processed_files": self.processed_files,
+            "successful_files": self.successful_files,
+            "failed_files": self.failed_files,
+            "remaining_files": self.total_files - self.processed_files,
+            "progress_percentage": round((self.processed_files / self.total_files) * 100, 2),
+            "elapsed_time": round(time.time() - self.start_time, 2)
+        }
 
 
 @router.get("/events", response_model=Response)
@@ -104,6 +128,7 @@ def prepare_event_data(
         status="success",
         status_code=200
     )
+
 @router.post("/create-event", response_model=Response)
 def create_event(
     event_name: str = Form(...),
@@ -569,7 +594,7 @@ async def handle_file_upload(
                 if isinstance(vector, np.ndarray):
                     vector = vector.tolist()
                 insert_face_vector(db, new_photo.id, json.dumps(vector))
-            logger.info(f"Face vectors for photo {file_name} inserted into database.")
+            print(f"Face vectors for photo {file_name} inserted into database.")
 
         if folder_id:
             event_folder_photo = EventFolderPhoto(
@@ -759,58 +784,18 @@ async def delete_folder(websocket: WebSocket, event_id: int, folder_id: int, db:
 
 active_connections: dict = {}
 
-class FileUploadMessage(BaseModel):
-    file_name: str
-    file_data: str
-
-class BulkFileUploadResponse(BaseModel):
-    message: str
-    status: str
-    status_code: int
-    data: List[dict]
-
-def process_face_detection(file_data: bytes, photo_id: int, db: Session, max_workers: int = 5):
-    face_detected_bytes = io.BytesIO(file_data)
-    print(f"Starting face detection for photo {photo_id} in thread {threading.current_thread().name}")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_vectors = executor.submit(asyncio.run, detect_faces_with_dlib_in_event(face_detected_bytes, False))
-        vectors = future_vectors.result()
-        print(f"Face detection completed for photo {photo_id} in thread {threading.current_thread().name}")
-
-        if vectors is not None:
-            futures = []
-            for vector in vectors:
-                futures.append(executor.submit(insert_face_vector_with_new_session, photo_id, vector))
-
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                    print(f"Face vector inserted for photo {photo_id} in thread {threading.current_thread().name}")
-                except Exception as e:
-                    logger.error(f"Error inserting face vector: {str(e)}")
-
-        photo = db.query(Photo).filter(Photo.id == photo_id).first()
-        if photo:
-            photo.is_detected_face = True
+def insert_vector_to_db(photo_id: int, vector: np.ndarray) -> bool:
+    """Insert single vector to database with its own session"""
+    with closing(SessionLocal()) as db:
+        try:
+            vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
+            insert_face_vector(db, photo_id, vector_json)
             db.commit()
-            print(f"Updated is_detected_face for photo {photo_id} in thread {threading.current_thread().name}")
-
-        print(f"Face vectors for photo {photo_id} inserted into database.")
-
-def insert_face_vector_with_new_session(photo_id: int, vector: np.ndarray):
-    new_session = SessionLocal()
-    print(f"Starting insert_face_vector_with_new_session for photo {photo_id} in thread {threading.current_thread().name}")
-    try:
-        vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
-        insert_face_vector(new_session, photo_id, vector_json)
-        new_session.commit()
-        print(f"Inserted face vector for photo {photo_id} in thread {threading.current_thread().name}")
-    except Exception as e:
-        new_session.rollback()
-        logger.error(f"Error inserting face vector with new session: {str(e)}")
-    finally:
-        new_session.close()
+            return True
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error inserting vector for photo {photo_id}: {e}")
+            return False
 
 @router.websocket("/ws/upload")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
@@ -820,38 +805,72 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         while True:
             # Listen for incoming messages from the client (optional, can be used for control)
             data = await websocket.receive_text()
-            logger.info(f"Received message from event id {user_id}: {data}")
+            print(f"Received message from event id {user_id}: {data}")
     except WebSocketDisconnect:
         del active_connections[user_id]
-        logger.info(f"Client {user_id} disconnected.")
-
-async def send_update_to_client(user_id: str, message: str):
-    """Send a message to the client via WebSocket"""
-    websocket = active_connections.get(user_id)
-    if websocket:
-        try:
-            await websocket.send_text(message)  # Await the send_text method
-        except Exception as e:
-            logger.error(f"Error sending message to event {user_id}: {e}")
+        print(f"Client {user_id} disconnected.")
 
 @router.post("/upload_files", response_model=None)
 async def handle_bulk_file_upload(
         event_id: int,
-        background_tasks: BackgroundTasks,
         files: List[UploadFile] = File(...),
         db: Session = Depends(get_db),
-        current_user: User = Depends(get_current_active_user),  # Use get_current_active_user for HTTP routes
-        folder_id: Optional[int] = None
+        current_user: User = Depends(get_current_active_user),
+        folder_id: Optional[int] = None,
+        batch_size: int = 5  # จำนวนไฟล์ที่จะ process พร้อมกัน
 ):
+    progress_logger = UploadProgressLogger(len(files), event_id)
+    connection_id = f"{event_id}_{current_user.id}"
+    websocket = active_connections.get(connection_id)
+
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
     if not event:
-        raise HTTPException(status_code=404, detail="Event not found in user's account")
+        raise HTTPException(status_code=404, detail="Event not found")
+
     response_data = []
-    for file in files:
+    # แบ่งไฟล์เป็น batches
+    for i in range(0, len(files), batch_size):
+        batch = files[i:i + batch_size]
+        tasks = []
+
+        # สร้าง task สำหรับแต่ละไฟล์ใน batch
+        for file in batch:
+            tasks.append(
+                process_single_file(
+                    file, event_id, current_user, db, folder_id,
+                    progress_logger, websocket, event
+                )
+            )
+
+        # รอให้ทุก task ใน batch เสร็จพร้อมกัน
+        batch_results = await asyncio.gather(*tasks)
+        response_data.extend([r for r in batch_results if r])
+
+    return {
+        "message": "Files processed successfully",
+        "status": "success",
+        "status_code": 200,
+        "data": response_data,
+    }
+
+async def process_single_file(
+    file: UploadFile,
+    event_id: int,
+    current_user: User,
+    db: Session,
+    folder_id: Optional[int],
+    progress_logger: UploadProgressLogger,
+    websocket: WebSocket,
+    event: Event
+) -> Optional[dict]:
+    try:
+        # สร้าง file path
         file_path = f"{current_user.id}/{event_id}"
         if folder_id:
-            event_folder = db.query(EventFolder).filter(EventFolder.event_id == event_id,
-                                                        EventFolder.id == folder_id).first()
+            event_folder = db.query(EventFolder).filter(
+                EventFolder.event_id == event_id,
+                EventFolder.id == folder_id
+            ).first()
             if not event_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
             file_path += f"/{event_folder.name}"
@@ -859,93 +878,163 @@ async def handle_bulk_file_upload(
         file_name = check_duplicate_name(file.filename, file_path, False)
         full_path = f"{file_path}/{file_name}"
         file_content = await file.read()
-        file_bytes = io.BytesIO(file_content)
 
-        # Upload to Spaces
+        # 1. Upload original file
+        file_bytes = io.BytesIO(file_content)
         upload_files_to_spaces(file_bytes, full_path)
 
-        # Generate preview image
+        # 2. Create and upload preview
         preview_bytes = io.BytesIO(file_content)
-
         preview_bytes.seek(0)
         with Image.open(preview_bytes) as image:
             image = image.convert("RGB")
             max_size = (image.width // 2, image.height // 2)
             image.thumbnail(max_size, Image.LANCZOS)
-
             preview_bytes = io.BytesIO()
             image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
             preview_path = f"{file_path}/preview_{file_name}"
             preview_bytes.seek(0)
-
             upload_files_to_spaces(preview_bytes, preview_path)
 
+        # 3. Process face detection
+        face_detected_bytes = io.BytesIO(file_content)
+        vectors = await detect_faces_with_dlib_in_event(face_detected_bytes, False)
+
+        # 4. Save to database
         new_photo = Photo(
             file_name=file_name,
-            file_path=f"{file_path}",
+            file_path=f"{file_path}/",
             size=len(file_content),
-            is_detected_face=False,  # Default value, will be updated after face detection
+            is_detected_face=(vectors is not None),
         )
 
-        try:
-            db.add(new_photo)
-            db.commit()
-            db.refresh(new_photo)
+        db.add(new_photo)
+        db.commit()
+        db.refresh(new_photo)
 
-            # Start background task for face detection
-            background_tasks.add_task(process_face_detection, file_content, new_photo.id, db)
-
-            if folder_id:
-                event_folder_photo = EventFolderPhoto(
-                    event_folder_id=folder_id,
-                    photo_id=new_photo.id
-                )
-                db.add(event_folder_photo)
-                db.commit()
-                db.refresh(event_folder_photo)
-
-                event_folder.total_photo_count += 1
-                event_folder.total_photo_size += len(file_content)
-                event_folder.updated_at = datetime.utcnow()
-                db.commit()
-            else:
-                event_photo = EventPhoto(
-                    event_id=event_id,
-                    photo_id=new_photo.id
-                )
-                db.add(event_photo)
-                db.commit()
-                db.refresh(event_photo)
-
-            event = db.query(Event).filter(Event.id == event_id).first()
-            event.total_image_count += 1
-            event.total_image_size += len(file_content)
-            event.updated_at = datetime.utcnow()
+        # 5. Insert vectors if detected
+        if vectors is not None:
+            for vector in vectors:
+                vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
+                insert_face_vector(db, new_photo.id, vector_json)
             db.commit()
 
-            # Send update message to client via WebSocket
-            await send_update_to_client(current_user.id, f"File {file_name} uploaded successfully!")
+        # 6. Update relations
+        if folder_id:
+            event_folder_photo = EventFolderPhoto(
+                event_folder_id=folder_id,
+                photo_id=new_photo.id
+            )
+            db.add(event_folder_photo)
+            event_folder.total_photo_count += 1
+            event_folder.total_photo_size += len(file_content)
+            event_folder.updated_at = datetime.utcnow()
+        else:
+            event_photo = EventPhoto(
+                event_id=event_id,
+                photo_id=new_photo.id
+            )
+            db.add(event_photo)
 
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Error saving photo {file_name} to database: {str(e)}")
-            response_data.append({"file_name": file_name, "error": f"Error saving photo to database: {str(e)}"})
-            await send_update_to_client(current_user.id, f"Error uploading file {file_name}: {str(e)}")
-            continue
+        event.total_image_count += 1
+        event.total_image_size += len(file_content)
+        event.updated_at = datetime.utcnow()
+        db.commit()
 
-        response_data.append({
+        progress_logger.processed_files += 1
+        progress_logger.successful_files += 1
+
+        if websocket:
+            await send_upload_progress(
+                websocket,
+                f"Processed {file.filename}",
+                progress_logger,
+                {"file_name": file.filename}
+            )
+
+        return {
             "photo_id": new_photo.id,
             "uploaded_at": new_photo.uploaded_at.isoformat(),
             "file_name": new_photo.file_name,
             "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview_{new_photo.file_name}")
-        })
+        }
 
-    return {
-        "message": "Files uploaded successfully",
-        "status": "success",
-        "status_code": 200,
-        "data": response_data
-    }
+    except Exception as e:
+        progress_logger.failed_files += 1
+        if websocket:
+            await send_upload_progress(
+                websocket,
+                f"Failed to process {file.filename}",
+                progress_logger,
+                {"error": str(e)},
+                "error"
+            )
+        logger.error(f"Error processing file {file.filename}: {str(e)}")
+        return None
+
+@router.websocket("/ws/upload-progress/{event_id}")
+async def upload_progress_websocket(
+        websocket: WebSocket,
+        event_id: int,
+        current_user: User = Depends(get_ws_current_active_user)
+):
+    try:
+        await websocket.accept()
+        connection_id = f"{event_id}_{current_user.id}"
+        active_connections[connection_id] = websocket
+
+        try:
+            # ส่งข้อความยืนยันการเชื่อมต่อ
+            await websocket.send_json({
+                "type": "connected",
+                "message": "Upload progress connection established",
+                "event_id": event_id
+            })
+
+            # รอรับข้อความจาก client
+            while True:
+                data = await websocket.receive_json()
+                if data.get("type") == "upload_complete":
+                    # ส่งสถานะเสร็จสิ้นกลับไป
+                    await websocket.send_json({
+                        "type": "upload_status",
+                        "status": "completed",
+                        "message": "All files uploaded successfully"
+                    })
+                    break
+
+        except WebSocketDisconnect:
+            print(f"Client disconnected: {connection_id}")
+        finally:
+            if connection_id in active_connections:
+                del active_connections[connection_id]
+
+    except Exception as e:
+        logging.error(f"WebSocket error: {str(e)}")
+        await websocket.close(code=1011)
+
+async def send_upload_progress(
+    websocket: WebSocket,
+    message: str,
+    progress: UploadProgressLogger,
+    data: dict = None,
+    level: str = "info"
+):
+    """Send formatted progress update through WebSocket"""
+    try:
+        log_data = {
+            "type": "upload_progress",
+            "level": level,
+            "message": message,
+            "timestamp": datetime.utcnow().isoformat(),
+            "progress": progress.to_dict(),
+            "data": data
+        }
+        await websocket.send_json(log_data)
+        logger.info(f"Progress sent: {message}")
+    except Exception as e:
+        logger.error(f"Error sending progress update: {e}")
+
 
 
 

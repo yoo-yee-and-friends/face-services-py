@@ -21,7 +21,7 @@ class Event(BaseModel):
     publish_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Credit(BaseModel):
     credit_type_id: str
