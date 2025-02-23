@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, BackgroundTasks
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
@@ -126,15 +128,49 @@ def get_public_event(
 async def search_image(
         event_id: int,
         file: UploadFile,
+        background_tasks: BackgroundTasks,
         db: Session = Depends(get_db)
-    ):
-    print("Searching for similar faces")
+):
+    # Validate file size first
+    file_size = 0
+    CHUNK_SIZE = 1024 * 1024  # 1MB
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+    while chunk := await file.read(CHUNK_SIZE):
+        file_size += len(chunk)
+        if file_size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="File too large. Maximum size is 10MB"
+            )
+    await file.seek(0)
+
     try:
-        event = db.query(Event).filter(Event.id == event_id, Event.status == True).first()
+        event = db.query(Event).filter(
+            Event.id == event_id,
+            Event.status == True
+        ).first()
+
         if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-        print("Searching for similar faces")
-        response = await find_similar_faces(event_id, file, db)
+            raise HTTPException(
+                status_code=404,
+                detail="Event not found"
+            )
+
+        # Set longer timeout for the processing
+        response = await asyncio.wait_for(
+            find_similar_faces(event_id, file, db),
+            timeout=300  # 5 minutes timeout
+        )
         return response
+
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Processing timeout. Please try with a smaller image."
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
