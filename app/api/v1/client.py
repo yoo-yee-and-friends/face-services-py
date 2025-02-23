@@ -128,6 +128,7 @@ async def search_image(
         file: UploadFile,
         db: Session = Depends(get_db)
     ):
+    print("Searching for similar faces")
     try:
         event = db.query(Event).filter(Event.id == event_id, Event.status == True).first()
         if not event:
