@@ -124,7 +124,7 @@ def get_public_event(
         status_code=200
     )
 
-@public_router.post("/search-image")
+@public_router.post("/public-search-photo", response_model=Response)
 async def search_image(
         event_id: int,
         file: UploadFile,
