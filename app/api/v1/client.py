@@ -124,18 +124,27 @@ def get_public_event(
         status_code=200
     )
 
-@public_router.post("/public-search-photo", response_model=Response)
+
+@public_router.post("/search-image", response_model=Response)
 async def search_image(
         event_id: int,
         file: UploadFile,
         db: Session = Depends(get_db)
-    ):
+):
     try:
         event = db.query(Event).filter(Event.id == event_id, Event.status == True).first()
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        print("Searching for similar faces")
+
+        print(f"Starting image search for event_id: {event_id}")
+        print(f"Uploaded file: {file.filename}, size: {file.size}")
+
         response = await find_similar_faces(event_id, file, db)
+        print("Search completed successfully")
         return response
+
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in search_image: {str(e)}\n{error_details}")
         raise HTTPException(status_code=500, detail=str(e))
