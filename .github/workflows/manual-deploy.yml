@@ -9,12 +9,9 @@ on:
         default: 'main'
         type: choice
         options:
-          - main
-          - old-version
-          - staging
-          - develop
-
-jobs:
+          -
+            
+            jobs:
   build:
     runs-on: ubuntu-latest
 
