@@ -132,52 +132,8 @@ async def search_image(
         db: Session = Depends(get_db)
 ):
     try:
-        # Log start of processing
-        print(f"Starting image search for event {event_id}")
-
-        # Validate event
-        event = db.query(Event).filter(Event.id == event_id, Event.status == True).first()
-        if not event:
-            print(f"Event {event_id} not found")
-            raise HTTPException(status_code=404, detail="Event not found")
-
-        # Read file content with size limit
-        MAX_SIZE = 10 * 1024 * 1024  # 10MB
-        file_content = b''
-        total_size = 0
-
-        while chunk := await file.read(1024 * 1024):  # 1MB chunks
-            total_size += len(chunk)
-            if total_size > MAX_SIZE:
-                print("File size exceeds limit")
-                raise HTTPException(status_code=413, detail="File too large")
-            file_content += chunk
-
-        if not file_content:
-            print("Empty file received")
-            raise HTTPException(status_code=400, detail="Empty file")
-
-        # Reset file position
-        await file.seek(0)
-
-        # Process with timeout
-        print("Starting face detection")
-        try:
-            response = await asyncio.wait_for(
-                find_similar_faces(event_id, file, db),
-                timeout=180  # 3 minutes timeout
-            )
-            print("Face detection completed successfully")
-            return response
-
-        except asyncio.TimeoutError:
-            print("Processing timeout")
-            raise HTTPException(status_code=504, detail="Processing timeout")
-
-    except HTTPException as he:
-        raise he
+        print("Searching for similar faces")
+        response = await find_similar_faces(event_id, file, db)
+        return response
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail="Processing failed")
+        raise HTTPException(status_code=500, detail=str(e))
