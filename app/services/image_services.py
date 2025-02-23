@@ -81,9 +81,9 @@ async def find_similar_faces(event_id, file, db: Session):
                 matches_faces.append({
                     "id": record.id,
                     "similarity": similarity,
-                    "file_name": record.photo.file_name.split('/')[-1],
+                    "file_name": record.photo.file_name,
                     "preview_url": generate_presigned_url(
-                        f"{record.photo.file_name.rsplit('/', 1)[0]}/preview_{record.photo.file_name.split('/')[-1]}"),
+                        f"{record.photo.file_path}preview_{record.photo.file_name}"),
                     "download_url": generate_presigned_url(record.photo.file_name)
                 })
 
