@@ -40,10 +40,10 @@ async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: 
             matches.append({
                 "id": record.id,
                 "similarity": float(similarity),
-                "file_name": record.photo.file_name.split('/')[-1],
+                "file_name": record.photo.file_name,
                 "preview_url": generate_presigned_url(
-                    f"{record.photo.file_name.rsplit('/', 1)[0]}/preview_{record.photo.file_name.split('/')[-1]}"),
-                "download_url": generate_presigned_url(record.photo.file_name)
+                    f"{record.photo.file_path}preview_{record.photo.file_name}"),
+                "download_url": generate_presigned_url(f"{record.photo.file_path}{record.photo.file_name}")
             })
     return matches
 
@@ -84,7 +84,7 @@ async def find_similar_faces(event_id, file, db: Session):
                     "file_name": record.photo.file_name,
                     "preview_url": generate_presigned_url(
                         f"{record.photo.file_path}preview_{record.photo.file_name}"),
-                    "download_url": generate_presigned_url(record.photo.file_name)
+                    "download_url": generate_presigned_url(f"{record.photo.file_path}{record.photo.file_name}")
                 })
 
         matches_faces = sorted(matches_faces, key=lambda x: x['similarity'], reverse=True)
