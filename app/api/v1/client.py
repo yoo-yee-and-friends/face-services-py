@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, BackgroundTasks, File
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
@@ -128,7 +128,7 @@ def get_public_event(
 @public_router.post("/search-image", response_model=Response)
 async def search_image(
         event_id: int,
-        file: UploadFile,
+        file: UploadFile = File(...),
         db: Session = Depends(get_db)
 ):
     try:
