@@ -63,7 +63,7 @@ def get_public_events(
             "status": event.status,
             "user_id": event.user_id,
             "publish_at": event.publish_at,
-            "cover_url": generate_presigned_url(f"{event.cover_photo.file_path}{event.cover_photo.file_name}") if event.cover_photo else None
+            "cover_url": generate_presigned_url(f"{event.cover_photo.file_path}preview_{event.cover_photo.file_name}") if event.cover_photo else None
         }
         for event in events
     ]
@@ -112,7 +112,7 @@ def get_public_event(
         "event_name": event.event_name,
         "event_type": event.event_type.name,
         "event_cover_photo": generate_presigned_url(
-            f"{event.cover_photo.file_path}preview_{event.cover_photo.file_name}"
+            f"{event.cover_photo.file_path}{event.cover_photo.file_name}"
         ),
         "date": event.date
     }
