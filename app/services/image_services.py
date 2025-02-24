@@ -17,7 +17,7 @@ import traceback
 from scipy.spatial.distance import cosine
 
 BATCH_SIZE = 100
-THRESHOLD = 0.8
+THRESHOLD = 0.94
 CACHE_SIZE = 128
 
 
@@ -25,11 +25,7 @@ CACHE_SIZE = 128
 def calculate_similarity(query_vector_tuple: tuple, stored_vector_tuple: tuple) -> float:
     query_vector = np.array(query_vector_tuple)
     stored_vector = np.array(stored_vector_tuple)
-
-    # Method 1: L2 (Euclidean) distance
-    # More accurate for face embeddings, recommended by dlib
-    dist = np.linalg.norm(query_vector - stored_vector)
-    return 1.0 / (1.0 + dist)
+    return 1 - cosine(query_vector, stored_vector)
 
 
 async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: float = THRESHOLD) -> List[Dict]:
@@ -75,7 +71,7 @@ async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     matches_faces = []
     try:
         print("Processing image:", file.filename)
-        threshold = 0.7
+        threshold = 0.94
 
         # Read file once
         file_content = await file.read()
