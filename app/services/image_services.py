@@ -1,12 +1,15 @@
+import asyncio
 import time
 from functools import lru_cache
+from io import BytesIO
 from typing import List, Dict
 
 import numpy as np
+from fastapi import UploadFile
 
 from app.schemas.user import Response
 from app.services.digital_oceans import generate_presigned_url
-from app.utils.model.face_detect import process_image_main_face
+from app.utils.model.face_detect import process_image_main_face, _detect_faces_safe
 from app.db.queries.image_queries import get_images_with_vectors
 from sqlalchemy.orm import Session
 import json
@@ -63,45 +66,63 @@ def retry_on_exception(exception, retries=3, delay=2):
     return decorator
 
 
-async def find_similar_faces(event_id, file, db: Session):
+async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     matches_faces = []
     try:
         print("Processing image:", file.filename)
         threshold = 0.94
 
-        query_vector = await process_image_main_face(file)  # Assume main face
+        # Read file once
+        file_content = await file.read()
+
+        # Run CPU-intensive face detection in a thread pool
+        query_vector = await asyncio.get_event_loop().run_in_executor(
+            None,  # Uses default executor
+            lambda: _detect_faces_safe(BytesIO(file_content), is_main_face=True, max_faces=1)
+        )
+
+        if not query_vector:
+            return Response(
+                message="No face detected in the uploaded image",
+                status_code=400,
+                status="Error",
+                data={"matches": []}
+            )
+
+        # Get first face vector
+        query_vector = query_vector[0]
+
+        # Get vectors from DB
         results = get_images_with_vectors(db, event_id)
 
-        for record in results:
-            vector = np.array(json.loads(record.vector), dtype=np.float32)
-            query_vector = np.ravel(query_vector)
-            vector = np.ravel(vector)
-            similarity = 1 - cosine(query_vector, vector)
-            if similarity >= threshold:
-                matches_faces.append({
-                    "id": record.id,
-                    "similarity": similarity,
-                    "file_name": record.photo.file_name,
-                    "preview_url": generate_presigned_url(
-                        f"{record.photo.file_path}preview_{record.photo.file_name}"),
-                    "download_url": generate_presigned_url(f"{record.photo.file_path}{record.photo.file_name}")
-                })
+        # Process matches in batches
+        for i in range(0, len(results), BATCH_SIZE):
+            batch = results[i:i + BATCH_SIZE]
+            # Allow other requests to be processed
+            batch_matches = await process_batch(query_vector, batch, threshold)
+            matches_faces.extend(batch_matches)
+            await asyncio.sleep(0)  # Yield control
 
         matches_faces = sorted(matches_faces, key=lambda x: x['similarity'], reverse=True)
+
     except Exception as e:
         print(f"Error processing file: {file.filename}")
         print(f"Error message: {str(e)}")
         traceback_lines = traceback.format_exc().splitlines()
         error_line = traceback_lines[-2]
         print(f"Error occurred at: {error_line}")
+        return Response(
+            message=f"Error processing image: {str(e)}",
+            status_code=500,
+            status="Error",
+            data={"matches": []}
+        )
 
     message = "Matching images found" if matches_faces else "No matching images found"
     return Response(
         message=message,
         status_code=200,
         status="Success",
-        data={
-            "matches": matches_faces
-        }
+        data={"matches": matches_faces}
     )
 

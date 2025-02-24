@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import concurrent
+import gc
 import io
 import json
 import logging
@@ -810,14 +811,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         del active_connections[user_id]
         print(f"Client {user_id} disconnected.")
 
-@router.post("/upload_files", response_model=None)
+@router.post("/upload-files", response_model=None)
 async def handle_bulk_file_upload(
         event_id: int,
         files: List[UploadFile] = File(...),
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_active_user),
         folder_id: Optional[int] = None,
-        batch_size: int = 5  # จำนวนไฟล์ที่จะ process พร้อมกัน
+        batch_size: int = 5
 ):
     progress_logger = UploadProgressLogger(len(files), event_id)
     connection_id = f"{event_id}_{current_user.id}"
@@ -828,12 +829,11 @@ async def handle_bulk_file_upload(
         raise HTTPException(status_code=404, detail="Event not found")
 
     response_data = []
-    # แบ่งไฟล์เป็น batches
+
     for i in range(0, len(files), batch_size):
         batch = files[i:i + batch_size]
         tasks = []
 
-        # สร้าง task สำหรับแต่ละไฟล์ใน batch
         for file in batch:
             tasks.append(
                 process_single_file(
@@ -853,18 +853,19 @@ async def handle_bulk_file_upload(
         "data": response_data,
     }
 
+
 async def process_single_file(
-    file: UploadFile,
-    event_id: int,
-    current_user: User,
-    db: Session,
-    folder_id: Optional[int],
-    progress_logger: UploadProgressLogger,
-    websocket: WebSocket,
-    event: Event
+        file: UploadFile,
+        event_id: int,
+        current_user: User,
+        db: Session,
+        folder_id: Optional[int],
+        progress_logger: UploadProgressLogger,
+        websocket: WebSocket,
+        event: Event
 ) -> Optional[dict]:
     try:
-        # สร้าง file path
+        # Create file path
         file_path = f"{current_user.id}/{event_id}"
         if folder_id:
             event_folder = db.query(EventFolder).filter(
@@ -877,49 +878,51 @@ async def process_single_file(
 
         file_name = check_duplicate_name(file.filename, file_path, False)
         full_path = f"{file_path}/{file_name}"
+
+        # Read file content once
         file_content = await file.read()
+        file_size = len(file_content)
 
-        # 1. Upload original file
-        file_bytes = io.BytesIO(file_content)
-        upload_files_to_spaces(file_bytes, full_path)
+        # Upload original file
+        with io.BytesIO(file_content) as file_bytes:
+            upload_files_to_spaces(file_bytes, full_path)
 
-        # 2. Create and upload preview
-        preview_bytes = io.BytesIO(file_content)
-        preview_bytes.seek(0)
-        with Image.open(preview_bytes) as image:
-            image = image.convert("RGB")
-            max_size = (image.width // 2, image.height // 2)
-            image.thumbnail(max_size, Image.LANCZOS)
-            preview_bytes = io.BytesIO()
-            image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
-            preview_path = f"{file_path}/preview_{file_name}"
-            preview_bytes.seek(0)
-            upload_files_to_spaces(preview_bytes, preview_path)
+        # Create and upload preview
+        with io.BytesIO(file_content) as preview_bytes:
+            with Image.open(preview_bytes) as image:
+                image = image.convert("RGB")
+                max_size = (image.width // 2, image.height // 2)
+                image.thumbnail(max_size, Image.LANCZOS)
 
-        # 3. Process face detection
-        face_detected_bytes = io.BytesIO(file_content)
-        vectors = await detect_faces_with_dlib_in_event(face_detected_bytes, False)
+                with io.BytesIO() as output:
+                    image.save(output, format="WEBP", quality=50, optimize=True)
+                    output.seek(0)
+                    preview_path = f"{file_path}/preview_{file_name}"
+                    upload_files_to_spaces(output, preview_path)
 
-        # 4. Save to database
+        # Process face detection
+        with io.BytesIO(file_content) as face_bytes:
+            vectors = await detect_faces_with_dlib_in_event(face_bytes, False)
+
+        # Save to database
         new_photo = Photo(
             file_name=file_name,
             file_path=f"{file_path}/",
-            size=len(file_content),
+            size=file_size,
             is_detected_face=(vectors is not None),
         )
-
         db.add(new_photo)
         db.commit()
         db.refresh(new_photo)
 
-        # 5. Insert vectors if detected
+        # Insert vectors if detected
         if vectors is not None:
             for vector in vectors:
                 vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
                 insert_face_vector(db, new_photo.id, vector_json)
             db.commit()
 
-        # 6. Update relations
+        # Update relations
         if folder_id:
             event_folder_photo = EventFolderPhoto(
                 event_folder_id=folder_id,
@@ -927,7 +930,7 @@ async def process_single_file(
             )
             db.add(event_folder_photo)
             event_folder.total_photo_count += 1
-            event_folder.total_photo_size += len(file_content)
+            event_folder.total_photo_size += file_size
             event_folder.updated_at = datetime.utcnow()
         else:
             event_photo = EventPhoto(
@@ -937,7 +940,7 @@ async def process_single_file(
             db.add(event_photo)
 
         event.total_image_count += 1
-        event.total_image_size += len(file_content)
+        event.total_image_size += file_size
         event.updated_at = datetime.utcnow()
         db.commit()
 
@@ -971,6 +974,9 @@ async def process_single_file(
             )
         logger.error(f"Error processing file {file.filename}: {str(e)}")
         return None
+    finally:
+        await file.close()
+        gc.collect()
 
 @router.websocket("/ws/upload-progress/{event_id}")
 async def upload_progress_websocket(

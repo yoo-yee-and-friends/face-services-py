@@ -1,4 +1,5 @@
 import asyncio
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List
 
@@ -37,59 +38,97 @@ async def detect_faces_with_dlib_in_event(image_bytes, is_main_face=True, max_fa
         print(f"Face detection error: {e}")
         return None
 
+
 def _detect_faces_safe(image_bytes, is_main_face: bool, max_faces: int) -> Optional[List[np.ndarray]]:
-    """Memory-safe face detection implementation"""
+    """
+    Memory-safe face detection with optimal image resizing and quality control.
+
+    Parameters:
+        image_bytes: BytesIO object containing the image
+        is_main_face: If True, only detect largest face
+        max_faces: Maximum number of faces to detect
+    """
     try:
-        # Reset file pointer
         image_bytes.seek(0)
 
-        # Process image in chunks to reduce memory usage
         with Image.open(image_bytes) as pil_image:
-            # Convert to numpy array with controlled memory
+            # Convert to RGB for consistent processing
+            pil_image = pil_image.convert('RGB')
+            width, height = pil_image.size
+
+            # Optimal size boundaries for face detection
+            min_dimension = 300  # Minimum size for reliable detection
+            optimal_dimension = 800  # Best balance of accuracy/performance
+            max_dimension = 1024  # Maximum size limit
+
+            # Calculate resize ratio
+            if width < min_dimension or height < min_dimension:
+                # Scale up small images
+                scale = min_dimension / min(width, height)
+            elif width > max_dimension or height > max_dimension:
+                # Scale down large images
+                scale = max_dimension / max(width, height)
+            else:
+                # Scale to optimal if within bounds
+                scale = optimal_dimension / max(width, height)
+
+            # Resize if needed
+            if abs(scale - 1.0) > 0.1:  # Only resize if change is >10%
+                new_size = (int(width * scale), int(height * scale))
+                pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Convert to numpy array efficiently
             img_array = np.asarray(pil_image, dtype=np.uint8)
             img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            # Free memory
+            # Free up memory
             del img_array
+            del pil_image
 
-            # Detect faces
-            faces = detector(gray, 1)  # Reduce upsampling to save memory
+            # Face detection with optimal parameters
+            faces = detector(gray, 1)  # upsample_num_times=1 for speed/accuracy balance
             if not faces:
                 return None
 
             face_embeddings = []
             if is_main_face:
-                # Process only largest face
+                # Get largest face by area
                 largest_face = max(faces, key=lambda face: face.width() * face.height())
                 shape = shape_predictor(gray, largest_face)
-                descriptor = np.array(face_rec_model.compute_face_descriptor(img, shape))
-                face_embeddings.append(descriptor)
+                face_area = largest_face.width() * largest_face.height()
 
+                # Only process faces above minimum size
+                min_face_area = (min_dimension * 0.2) ** 2  # 20% of min dimension
+                if face_area >= min_face_area:
+                    descriptor = np.array(face_rec_model.compute_face_descriptor(img, shape))
+                    face_embeddings.append(descriptor)
             else:
-                # Process multiple faces efficiently
+                # Process multiple faces with quality scoring
                 faces_data = []
                 for face in faces:
-                    shape = shape_predictor(gray, face)
-                    area = face.width() * face.height()
-                    landmarks = np.array([[p.x, p.y] for p in shape.parts()])
-                    score = area * np.sum(np.std(landmarks, axis=0))
-                    faces_data.append((face, score, shape))
+                    face_area = face.width() * face.height()
+                    if face_area >= (min_dimension * 0.2) ** 2:
+                        shape = shape_predictor(gray, face)
+                        # Quality score based on face size and landmark distribution
+                        landmarks = np.array([[p.x, p.y] for p in shape.parts()])
+                        score = face_area * np.sum(np.std(landmarks, axis=0))
+                        faces_data.append((face, score, shape))
 
-                # Sort and limit before computing expensive descriptors
+                # Process best faces up to max_faces limit
                 faces_data.sort(key=lambda x: x[1], reverse=True)
                 for face, _, shape in faces_data[:max_faces]:
                     descriptor = np.array(face_rec_model.compute_face_descriptor(img, shape))
                     face_embeddings.append(descriptor)
 
-            # Clean up
-            del img
-            del gray
-            return face_embeddings
+            return face_embeddings if face_embeddings else None
 
     except Exception as e:
         print(f"Error in face detection: {e}")
         return None
+    finally:
+        # Ensure cleanup
+        gc.collect()
 
 async def detect_faces_with_dlib(img, is_main_face=True):
     print("Detecting faces with dlib")
