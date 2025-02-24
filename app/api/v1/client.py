@@ -2,7 +2,8 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, BackgroundTasks, File
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, selectinload
 from typing import List, Dict, Any, Optional
 
 from app.db.models import EventType, City
@@ -13,6 +14,7 @@ from app.services.digital_oceans import generate_presigned_url
 from app.services.image_services import find_similar_faces
 
 public_router = APIRouter()
+
 
 @public_router.get("/public-events", response_model=Response)
 def get_public_events(
@@ -31,8 +33,12 @@ def get_public_events(
             status="error"
         )
 
-    query = db.query(Event).filter(Event.status == True)
+    # Base query with efficient loading
+    query = db.query(Event).options(
+        selectinload(Event.cover_photo)
+    ).filter(Event.status == True)
 
+    # Apply filters
     if search:
         query = query.filter(
             (Event.event_name.ilike(f"%{search}%")) |
@@ -48,11 +54,18 @@ def get_public_events(
     if date:
         query = query.filter(Event.date == date)
 
-    total_events = query.count()
+    # Get total count with subquery optimization
+    count_query = query.with_entities(func.count(Event.id))
+    total_events = db.scalar(count_query)
+
+    # Calculate pagination
     skip = (page - 1) * limit
-    events = query.order_by(Event.date).offset(skip).limit(limit).all()
     total_pages = (total_events + limit - 1) // limit
 
+    # Get paginated results with ordering
+    events = query.order_by(Event.date).offset(skip).limit(limit).all()
+
+    # Process results
     events_data = [
         {
             "id": event.id,
@@ -63,7 +76,9 @@ def get_public_events(
             "status": event.status,
             "user_id": event.user_id,
             "publish_at": event.publish_at,
-            "cover_url": generate_presigned_url(f"{event.cover_photo.file_path}{event.cover_photo.file_name}") if event.cover_photo else None
+            "cover_url": generate_presigned_url(
+                f"{event.cover_photo.file_path}{event.cover_photo.file_name}"
+            ) if event.cover_photo else None
         }
         for event in events
     ]

@@ -17,7 +17,7 @@ import traceback
 from scipy.spatial.distance import cosine
 
 BATCH_SIZE = 100
-THRESHOLD = 0.94
+THRESHOLD = 0.8
 CACHE_SIZE = 128
 
 
@@ -25,7 +25,11 @@ CACHE_SIZE = 128
 def calculate_similarity(query_vector_tuple: tuple, stored_vector_tuple: tuple) -> float:
     query_vector = np.array(query_vector_tuple)
     stored_vector = np.array(stored_vector_tuple)
-    return 1 - cosine(query_vector, stored_vector)
+
+    # Method 1: L2 (Euclidean) distance
+    # More accurate for face embeddings, recommended by dlib
+    dist = np.linalg.norm(query_vector - stored_vector)
+    return 1.0 / (1.0 + dist)
 
 
 async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: float = THRESHOLD) -> List[Dict]:
@@ -44,6 +48,7 @@ async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: 
                 "id": record.id,
                 "similarity": float(similarity),
                 "file_name": record.photo.file_name,
+                "uploaded_at": record.photo.uploaded_at,
                 "preview_url": generate_presigned_url(
                     f"{record.photo.file_path}preview_{record.photo.file_name}"),
                 "download_url": generate_presigned_url(f"{record.photo.file_path}{record.photo.file_name}")
@@ -70,7 +75,7 @@ async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     matches_faces = []
     try:
         print("Processing image:", file.filename)
-        threshold = 0.94
+        threshold = 0.7
 
         # Read file once
         file_content = await file.read()
@@ -103,7 +108,7 @@ async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
             matches_faces.extend(batch_matches)
             await asyncio.sleep(0)  # Yield control
 
-        matches_faces = sorted(matches_faces, key=lambda x: x['similarity'], reverse=True)
+        matches_faces = sorted(matches_faces, key=lambda x: x['uploaded_at'])
 
     except Exception as e:
         print(f"Error processing file: {file.filename}")
