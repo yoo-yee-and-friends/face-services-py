@@ -71,7 +71,7 @@ async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     matches_faces = []
     try:
         print("Processing image:", file.filename)
-        threshold = 0.94
+        threshold = 0.95
 
         # Read file once
         file_content = await file.read()
