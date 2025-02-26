@@ -9,7 +9,6 @@ from app.db.models.EventFolderPhoto import EventFolderPhoto
 from app.db.models.EventPhoto import EventPhoto
 from app.db.models.Photo import Photo
 from app.db.models.PhotoFaceVector import PhotoFaceVector
-from app.db.models.PhotoVector import PhotoVector
 
 
 def insert_face_vector(db: Session, photo_id: int, vector_data: str):

@@ -296,7 +296,7 @@ def get_event_details(
             "uploaded_at": photo.uploaded_at,
             "file_name": photo.file_name,
             "preview_url": generate_presigned_url(
-                f"{photo.file_path}/preview_{photo.file_name}"
+                f"{photo.file_path}preview_{photo.file_name}"
             )
         }
         for photo in photos
@@ -389,11 +389,12 @@ def get_folder_details(
         status_code=200
     )
 
+
 @router.delete("/delete-event", response_model=Response)
 def delete_event(
-    event_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+        event_id: int,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_active_user)
 ):
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
     if not event:
@@ -403,67 +404,87 @@ def delete_event(
             status_code=404
         )
 
-    # Delete cover photo if it exists
-    if event.cover_photo_id:
-        cover_photo = db.query(Photo).filter(Photo.id == event.cover_photo_id).first()
-        if cover_photo:
-            delete_file_from_spaces(f"{cover_photo.file_path}{cover_photo.file_name}")
-            delete_file_from_spaces(f"{cover_photo.file_path}preview_{cover_photo.file_name}")
-            db.delete(cover_photo)
-            db.commit()
+    try:
+        # Delete cover photo if it exists
+        if event.cover_photo_id:
+            cover_photo = db.query(Photo).filter(Photo.id == event.cover_photo_id).first()
+            if cover_photo:
+                # Store file paths before deletion
+                cover_paths = [
+                    f"{cover_photo.file_path}{cover_photo.file_name}",
+                    f"{cover_photo.file_path}preview_{cover_photo.file_name}"
+                ]
+                for path in cover_paths:
+                    delete_file_from_spaces(path)
+                db.delete(cover_photo)
+                db.commit()
 
-    # Delete all photos in event
-    photos = db.query(Photo).join(EventPhoto).filter(EventPhoto.event_id == event_id).all()
-    for photo in photos:
-        delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
-        delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
-
-        # Delete photo vectors
-        db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
-        db.commit()
-
-        # Delete from EventPhoto
-        db.query(EventPhoto).filter(EventPhoto.photo_id == photo.id).delete()
-        db.commit()
-
-        # Delete photo from database
-        db.delete(photo)
-        db.commit()
-
-    # Delete all folders in event
-    folders = db.query(EventFolder).filter(EventFolder.event_id == event_id).all()
-    for folder in folders:
-        photos = db.query(Photo).join(EventFolderPhoto).filter(EventFolderPhoto.event_folder_id == folder.id).all()
+        # Get all photos in event with their paths
+        photos = db.query(Photo).join(EventPhoto).filter(EventPhoto.event_id == event_id).all()
         for photo in photos:
-            delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
-            delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
-
-            # Delete photo vectors
+            # Store paths before deletion
+            photo_paths = [
+                f"{photo.file_path}{photo.file_name}",
+                f"{photo.file_path}preview_{photo.file_name}"
+            ]
+            # Delete vectors first
             db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
-            db.commit()
-
-            # Delete from EventFolderPhoto
-            db.query(EventFolderPhoto).filter(
-                EventFolderPhoto.photo_id == photo.id,
-                EventFolderPhoto.event_folder_id == folder.id
-            ).delete()
-            db.commit()
-
-            # Delete photo from database
+            db.query(EventPhoto).filter(EventPhoto.photo_id == photo.id).delete()
             db.delete(photo)
             db.commit()
 
-        db.delete(folder)
+            # Delete files after database cleanup
+            for path in photo_paths:
+                delete_file_from_spaces(path)
+
+        # Handle folders
+        folders = db.query(EventFolder).filter(EventFolder.event_id == event_id).all()
+        for folder in folders:
+            # Get folder photos with their paths
+            folder_photos = db.query(Photo).join(EventFolderPhoto).filter(
+                EventFolderPhoto.event_folder_id == folder.id
+            ).all()
+
+            for photo in folder_photos:
+                # Store paths before deletion
+                photo_paths = [
+                    f"{photo.file_path}{photo.file_name}",
+                    f"{photo.file_path}preview_{photo.file_name}"
+                ]
+                # Delete database records first
+                db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
+                db.query(EventFolderPhoto).filter(
+                    EventFolderPhoto.photo_id == photo.id,
+                    EventFolderPhoto.event_folder_id == folder.id
+                ).delete()
+                db.delete(photo)
+                db.commit()
+
+                # Delete files after database cleanup
+                for path in photo_paths:
+                    delete_file_from_spaces(path)
+
+            db.delete(folder)
+            db.commit()
+
+        # Finally delete the event
+        db.delete(event)
         db.commit()
 
-    db.delete(event)
-    db.commit()
+        return Response(
+            message="Event deleted successfully",
+            status="success",
+            status_code=200
+        )
 
-    return Response(
-        message="Event deleted successfully",
-        status="success",
-        status_code=200
-    )
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting event: {str(e)}")
+        return Response(
+            message=f"Error deleting event: {str(e)}",
+            status="error",
+            status_code=500
+        )
 
 @router.websocket("/ws/upload-photos")
 async def websocket_upload_images(
