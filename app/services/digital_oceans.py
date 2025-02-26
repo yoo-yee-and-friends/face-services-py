@@ -52,7 +52,6 @@ def create_folder_in_spaces(folder_path: str):
         logger.error(f"Error creating folder: {e}")
         raise HTTPException(status_code=500, detail=f"Error creating folder: {e}")
 
-
 def check_duplicate_name(base_name: str, folder_path: str, is_folder: bool) -> str:
     s3_client = boto3.client('s3',
                              aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,

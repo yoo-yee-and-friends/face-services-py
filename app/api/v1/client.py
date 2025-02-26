@@ -15,7 +15,6 @@ from app.services.image_services import find_similar_faces
 
 public_router = APIRouter()
 
-
 @public_router.get("/public-events", response_model=Response)
 def get_public_events(
     page: int = 1,
@@ -138,7 +137,6 @@ def get_public_event(
         status="success",
         status_code=200
     )
-
 
 @public_router.post("/search-image", response_model=Response)
 async def search_image(

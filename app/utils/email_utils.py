@@ -5,7 +5,6 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound, TemplateSyntaxError
 
-
 class EmailData:
     def __init__(self, email, code, time, ip_address, device):
         self.email = email
@@ -41,7 +40,6 @@ def create_email_content(to: str, code: str, ip_address: str, device: str, templ
         raise e
 
     return html_body
-
 
 def load_email_template(template_path: str, data: EmailData) -> str:
     try:

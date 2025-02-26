@@ -5,6 +5,8 @@ from app.db.base import Base
 from datetime import datetime
 from app.db.models.User import User
 from app.db.models.PhotoVector import PhotoVector
+from app.db.models.PhotoFaceVector import PhotoFaceVector
+
 
 
 class Photo(Base):
@@ -24,6 +26,7 @@ class Photo(Base):
     event_folder_photos = relationship("EventFolderPhoto", back_populates="photo")
     event_photos = relationship("EventPhoto", back_populates="photo")
     vectors = relationship("PhotoVector", back_populates="photo")
+    face_vectors = relationship("PhotoFaceVector", back_populates="photo")
 
     def __repr__(self):
         return f"<Photo(id={self.id}, filename={self.filename})>"

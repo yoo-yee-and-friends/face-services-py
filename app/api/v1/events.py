@@ -32,7 +32,7 @@ from app.db.models.EventFolder import EventFolder
 from app.db.models.EventFolderPhoto import EventFolderPhoto
 from app.db.models.EventPhoto import EventPhoto
 from app.db.models.EventType import EventType
-from app.db.models.PhotoVector import PhotoVector
+from app.db.models.PhotoFaceVector import PhotoFaceVector
 from app.db.queries.image_queries import insert_face_vector
 from app.db.session import get_db, SessionLocal
 from app.schemas.event import Event as EventSchema, EventCreate, Credit
@@ -419,7 +419,7 @@ def delete_event(
         delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
 
         # Delete photo vectors
-        db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+        db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
         db.commit()
 
         # Delete from EventPhoto
@@ -439,7 +439,7 @@ def delete_event(
             delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
 
             # Delete photo vectors
-            db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+            db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
             db.commit()
 
             # Delete from EventFolderPhoto
@@ -707,7 +707,7 @@ async def delete_file(websocket: WebSocket, event_id: int, file_id: int, db: Ses
             db.commit()
 
     # Delete photo vectors
-    db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+    db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
     db.commit()
 
     if folder_id:
@@ -758,7 +758,7 @@ async def delete_folder(websocket: WebSocket, event_id: int, folder_id: int, db:
         db.commit()
 
         # Delete photo vectors
-        db.query(PhotoVector).filter(PhotoVector.photo_id == photo.id).delete()
+        db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
         db.commit()
 
         # Delete from EventFolderPhoto
@@ -918,6 +918,12 @@ async def process_single_file(
         # Insert vectors if detected
         if vectors is not None:
             for vector in vectors:
+                if isinstance(vector, np.ndarray):
+                    # Ensure vector is float32 and has correct dimensions
+                    vector = vector.astype(np.float32)
+                    if vector.size != 128:
+                        logger.error(f"Invalid vector dimension: {vector.size}")
+                        continue
                 vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
                 insert_face_vector(db, new_photo.id, vector_json)
             db.commit()

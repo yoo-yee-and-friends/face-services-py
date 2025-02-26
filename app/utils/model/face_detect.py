@@ -16,7 +16,6 @@ detector = dlib.get_frontal_face_detector()
 
 executor = ThreadPoolExecutor(max_workers=3)
 
-
 async def detect_faces_with_dlib_in_event(image_bytes, is_main_face=True, max_faces=20):
     """Detect faces using thread pool with improved memory management"""
     print("Detecting faces with dlib in event image")
@@ -38,16 +37,7 @@ async def detect_faces_with_dlib_in_event(image_bytes, is_main_face=True, max_fa
         print(f"Face detection error: {e}")
         return None
 
-
 def _detect_faces_safe(image_bytes, is_main_face: bool, max_faces: int) -> Optional[List[np.ndarray]]:
-    """
-    Memory-safe face detection with optimal image resizing and quality control.
-
-    Parameters:
-        image_bytes: BytesIO object containing the image
-        is_main_face: If True, only detect largest face
-        max_faces: Maximum number of faces to detect
-    """
     try:
         image_bytes.seek(0)
 

@@ -228,7 +228,6 @@ async def send_verification_code(input: SendVerificationCodeInput, request: Requ
         status_code=status.HTTP_200_OK
     )
 
-
 @router.post("/login", response_model=Response)
 async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
@@ -275,7 +274,6 @@ async def login_for_test(
     )
 
     return Token(access_token=access_token, token_type="bearer")
-
 
 @router.get("/user/profile", response_model=Response)
 async def get_user_profile(current_user: User = Depends(get_current_active_user)):

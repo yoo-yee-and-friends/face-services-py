@@ -27,13 +27,19 @@ def calculate_similarity(query_vector_tuple: tuple, stored_vector_tuple: tuple) 
     stored_vector = np.array(stored_vector_tuple)
     return 1 - cosine(query_vector, stored_vector)
 
-
 async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: float = THRESHOLD) -> List[Dict]:
     matches = []
     query_vector = np.ravel(query_vector)
 
     for record in batch:
-        vector = np.array(json.loads(record.vector), dtype=np.float32)
+        # Handle the vector data based on its type
+        if isinstance(record.vector, str):
+            vector = np.array(json.loads(record.vector), dtype=np.float32)
+        elif isinstance(record.vector, (list, np.ndarray)):
+            vector = np.array(record.vector, dtype=np.float32)
+        else:
+            continue
+
         vector = np.ravel(vector)
 
         # Convert numpy arrays to tuples for caching
@@ -65,7 +71,6 @@ def retry_on_exception(exception, retries=3, delay=2):
                     time.sleep(delay)
         return wrapper
     return decorator
-
 
 async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     matches_faces = []
