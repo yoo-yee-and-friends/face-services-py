@@ -24,7 +24,7 @@ EMAIL_REGEX = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter()
 
-@router.post("/signup", response_model=Response)
+# @router.post("/signup", response_model=Response)
 async def signup(user: UserCreate, db: Session = Depends(get_db)):
     errors = validate_user_input(user)
     if errors:
