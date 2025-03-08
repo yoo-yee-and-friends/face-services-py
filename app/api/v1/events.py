@@ -14,6 +14,7 @@ from datetime import datetime
 from functools import partial
 from http.client import responses
 
+import boto3
 import numpy as np
 import psutil
 from PIL import Image
@@ -41,14 +42,14 @@ from app.security.auth import get_current_active_user, get_ws_current_active_use
 from typing import List, Dict, Any, Optional
 
 from app.services.digital_oceans import upload_file_to_spaces, generate_presigned_url, create_folder_in_spaces, \
-    check_duplicate_name, upload_files_to_spaces, delete_file_from_spaces
+    check_duplicate_name, upload_files_to_spaces, delete_file_from_spaces, generate_presigned_upload_url
 
 from app.db.models.User import User
 from app.db.models.Photo import Photo
 from app.db.models.Event import Event
 from app.db.models.EventCredit import EventCredit
 from app.utils.event_utils import get_event_query, paginate_query, format_event_data
-from app.utils.model.face_detect import detect_faces_with_dlib_in_event
+from app.utils.model.face_detect import detect_faces_with_dlib_in_event, detect_faces_with_insightface
 from app.utils.validation import validate_date_format
 
 router = APIRouter()
@@ -839,40 +840,264 @@ async def handle_bulk_file_upload(
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_active_user),
         folder_id: Optional[int] = None,
-        batch_size: int = 5
+        batch_size: int = 5,
+        background_tasks: BackgroundTasks = None
 ):
-    progress_logger = UploadProgressLogger(len(files), event_id)
-    connection_id = f"{event_id}_{current_user.id}"
-    websocket = active_connections.get(connection_id)
-
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    response_data = []
+    connection_id = f"{event_id}_{current_user.id}"
+    websocket = active_connections.get(connection_id)
+    progress_logger = UploadProgressLogger(len(files), event_id)
 
-    for i in range(0, len(files), batch_size):
-        batch = files[i:i + batch_size]
-        tasks = []
-
-        for file in batch:
-            tasks.append(
-                process_single_file(
-                    file, event_id, current_user, db, folder_id,
-                    progress_logger, websocket, event
-                )
+    if websocket:
+        try:
+            await send_upload_progress(
+                websocket,
+                f"Started processing {len(files)} files for face detection",
+                progress_logger,
+                {"total_files": len(files)}
             )
+        except Exception as e:
+            logger.error(f"Error sending initial WebSocket message: {str(e)}")
 
-        # รอให้ทุก task ใน batch เสร็จพร้อมกัน
-        batch_results = await asyncio.gather(*tasks)
-        response_data.extend([r for r in batch_results if r])
+    background_tasks.add_task(
+        process_files_in_background,
+        files=files,
+        event_id=event_id,
+        current_user=current_user,
+        db_session=db,
+        folder_id=folder_id,
+        batch_size=batch_size,
+        progress_logger=progress_logger,
+        connection_id=connection_id
+    )
 
     return {
-        "message": "Files processed successfully",
+        "message": "File processing started in background...",
         "status": "success",
-        "status_code": 200,
-        "data": response_data,
+        "status_code": 202,
+        "data": {
+            "total_files": len(files),
+            "event_id": event_id
+        }
     }
+
+
+@router.post("/batch-upload-urls", response_model=Response)
+async def create_upload_urls(
+        request: dict,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    event_id = request.get("eventId")
+    images = request.get("images", [])
+
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing event ID")
+
+    if not images:
+        raise HTTPException(status_code=400, detail="No images provided")
+
+    # Verify event exists and belongs to user
+    event = db.query(Event).filter(
+        Event.id == event_id,
+        Event.user_id == current_user.id
+    ).first()
+
+    if not event:
+        raise HTTPException(
+            status_code=404,
+            detail="Event not found or doesn't belong to the current user"
+        )
+
+    # Generate URLs for each image with duplicate detection
+    result = []
+    base_path = f"{current_user.id}/{event_id}"
+
+    # Get existing files to check for duplicates
+    s3_client = boto3.client('s3',
+                             aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
+                             aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY,
+                             endpoint_url=settings.SPACES_ENDPOINT)
+
+    try:
+        existing_files = s3_client.list_objects_v2(Bucket='snapgoated', Prefix=base_path)
+        existing_names = [obj['Key'].split('/')[-1] for obj in existing_files.get('Contents', [])]
+    except Exception as e:
+        logger.error(f"Error checking existing files: {str(e)}")
+        existing_names = []
+
+    # Track names we've already processed in this batch
+    processed_names = set(existing_names)
+
+    for image in images:
+        file_name = image.get("name", "")
+        content_type = image.get("content_type", "image/jpeg")
+
+        if not file_name:
+            continue
+
+        # Check for duplicates
+        is_duplicate = file_name in processed_names
+        new_file_name = file_name
+
+        if is_duplicate:
+            # Generate new name if duplicate
+            name, ext = file_name.rsplit('.', 1) if '.' in file_name else (file_name, '')
+            counter = 1
+
+            while f"{name} ({counter}).{ext}" in processed_names:
+                counter += 1
+
+            new_file_name = f"{name} ({counter}).{ext}" if ext else f"{name} ({counter})"
+
+            # Add the new name to processed names
+            processed_names.add(new_file_name)
+
+        else:
+            # Add original name to processed names
+            processed_names.add(file_name)
+
+        # Original file path
+        file_path = f"{base_path}/{new_file_name}"
+
+        # Preview file path
+        preview_file_path = f"{base_path}/preview_{new_file_name}"
+
+        try:
+            # Generate presigned URLs
+            upload_url = generate_presigned_upload_url(
+                file_path=file_path,
+                expiration=3600,
+                content_type=content_type
+            )
+
+            preview_url = generate_presigned_upload_url(
+                file_path=preview_file_path,
+                expiration=3600,
+                content_type="image/webp" if content_type.startswith("image/") else content_type
+            )
+
+            result.append({
+                "name": file_name,
+                "url": upload_url,
+                "url_preview": preview_url,
+                "isDuplicate": is_duplicate,
+                "newFileName": new_file_name if is_duplicate else ""
+            })
+
+        except Exception as e:
+            logger.error(f"Error generating upload URL for {file_name}: {str(e)}")
+
+    return Response(
+        message=f"Generated {len(result)} upload URLs successfully",
+        status_code=200,
+        status="success",
+        data={"urls": result}  # ครอบด้วย dictionary
+    )
+
+async def process_files_in_background(
+        files: List[UploadFile],
+        event_id: int,
+        current_user: User,
+        db_session: Session,
+        folder_id: Optional[int],
+        batch_size: int,
+        progress_logger: UploadProgressLogger,
+        connection_id: str
+):
+    websocket = active_connections.get(connection_id)
+
+    with SessionLocal() as session:
+        event = session.query(Event).filter(Event.id == event_id).first()
+        if not event:
+            print(f"Event {event_id} not found")
+            return
+
+    try:
+        print(f"Starting background processing of {len(files)} files for event {event_id}")
+        
+        # Calculate optimal batch size based on available memory
+        available_memory = psutil.virtual_memory().available
+        optimal_batch_size = min(batch_size, max(1, available_memory // (100 * 1024 * 1024)))  # 100MB per file estimate
+        
+        for i in range(0, len(files), optimal_batch_size):
+            batch = files[i:i + optimal_batch_size]
+            tasks = []
+            
+            # Process files in parallel with rate limiting
+            semaphore = asyncio.Semaphore(3)  # Limit concurrent processing
+            
+            async def process_with_semaphore(file):
+                async with semaphore:
+                    with SessionLocal() as file_db:
+                        return await process_single_file_insightface(
+                            file, event_id, current_user, file_db, folder_id,
+                            progress_logger, websocket, event
+                        )
+            
+            for file in batch:
+                tasks.append(process_with_semaphore(file))
+            
+            # Wait for all tasks in current batch to complete
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results and update progress
+            for idx, result in enumerate(batch_results):
+                file_index = i + idx
+                if file_index < len(files):
+                    filename = files[file_index].filename
+                    if isinstance(result, Exception):
+                        print(f"❌ Failed to upload {filename}: {str(result)}")
+                    else:
+                        print(f"✅ Successfully processed {filename} ({file_index + 1}/{len(files)})")
+            
+            # Add small delay between batches to prevent overwhelming resources
+            await asyncio.sleep(0.5)
+            
+            # Force garbage collection after each batch
+            gc.collect()
+            
+            # Update event timestamp periodically
+            if i % (optimal_batch_size * 5) == 0:
+                with SessionLocal() as update_db:
+                    event_update = update_db.query(Event).filter(Event.id == event_id).first()
+                    if event_update:
+                        event_update.updated_at = datetime.utcnow()
+                        update_db.commit()
+
+        # Final event update
+        with SessionLocal() as final_db:
+            event_update = final_db.query(Event).filter(Event.id == event_id).first()
+            if event_update:
+                event_update.updated_at = datetime.utcnow()
+                final_db.commit()
+
+        if websocket and not websocket.client_disconnected:
+            await send_upload_progress(
+                websocket,
+                f"Completed processing {progress_logger.successful_files}/{len(files)} files",
+                progress_logger,
+                {"completed": True}
+            )
+    except Exception as e:
+        print(f"Background processing error: {str(e)}")
+        if websocket and not websocket.client_disconnected:
+            await send_upload_progress(
+                websocket,
+                "Error in background processing",
+                progress_logger,
+                {"error": str(e)},
+                "error"
+            )
+    finally:
+        # Clean up resources
+        for file in files:
+            if not file.file.closed:
+                await file.close()
+        gc.collect()
 
 
 async def process_single_file(
@@ -1005,46 +1230,229 @@ async def process_single_file(
         await file.close()
         gc.collect()
 
+
+async def process_single_file_insightface(
+        file: UploadFile,
+        event_id: int,
+        current_user: User,
+        db: Session,
+        folder_id: Optional[int],
+        progress_logger: UploadProgressLogger,
+        websocket: WebSocket,
+        event: Event
+) -> Optional[dict]:
+    try:
+        # Create file path
+        file_path = f"{current_user.id}/{event_id}"
+        if folder_id:
+            event_folder = db.query(EventFolder).filter(
+                EventFolder.event_id == event_id,
+                EventFolder.id == folder_id
+            ).first()
+            if not event_folder:
+                raise HTTPException(status_code=404, detail="ไม่พบโฟลเดอร์")
+            file_path += f"/{event_folder.name}"
+
+        file_name = check_duplicate_name(file.filename, file_path, False)
+        full_path = f"{file_path}/{file_name}"
+
+        # Read file content in chunks to manage memory
+        chunk_size = 1024 * 1024  # 1MB chunks
+        file_content = io.BytesIO()
+        total_size = 0
+        
+        while chunk := await file.read(chunk_size):
+            file_content.write(chunk)
+            total_size += len(chunk)
+        
+        file_content.seek(0)
+
+        # Upload original file
+        upload_files_to_spaces(file_content, full_path)
+
+        # Create and upload preview
+        try:
+            preview_bytes = io.BytesIO()
+            with Image.open(file_content) as image:
+                image = image.convert("RGB")
+                max_size = (image.width // 2, image.height // 2)
+                image.thumbnail(max_size, Image.LANCZOS)
+                image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
+                preview_bytes.seek(0)
+                preview_path = f"{file_path}/preview_{file_name}"
+                upload_files_to_spaces(preview_bytes, preview_path)
+        except Exception as e:
+            logger.error(f"Error creating preview for {file_name}: {str(e)}")
+
+        # Face detection with memory optimization
+        try:
+            face_bytes = io.BytesIO()
+            file_content.seek(0)
+            face_bytes.write(file_content.getvalue())
+            face_bytes.seek(0)
+            vectors = await detect_faces_with_insightface(face_bytes, False)
+        except Exception as e:
+            logger.error(f"Error detecting faces for {file_name}: {str(e)}")
+            vectors = None
+
+        # Database operations
+        new_photo = Photo(
+            file_name=file_name,
+            file_path=f"{file_path}/",
+            size=total_size,
+            is_detected_face=(vectors is not None),
+        )
+        db.add(new_photo)
+        db.commit()
+        db.refresh(new_photo)
+
+        if vectors is not None:
+            for vector in vectors:
+                if isinstance(vector, np.ndarray):
+                    vector = vector.astype(np.float32)
+                vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
+                insert_face_vector(db, new_photo.id, vector_json)
+            db.commit()
+
+        if folder_id:
+            event_folder_photo = EventFolderPhoto(
+                event_folder_id=folder_id,
+                photo_id=new_photo.id
+            )
+            db.add(event_folder_photo)
+            event_folder.total_photo_count += 1
+            event_folder.total_photo_size += total_size
+            event_folder.updated_at = datetime.utcnow()
+        else:
+            event_photo = EventPhoto(
+                event_id=event_id,
+                photo_id=new_photo.id
+            )
+            db.add(event_photo)
+
+        event.total_image_count += 1
+        event.total_image_size += total_size
+        event.updated_at = datetime.utcnow()
+        db.commit()
+
+        progress_logger.processed_files += 1
+        progress_logger.successful_files += 1
+
+        if websocket:
+            await send_upload_progress(
+                websocket,
+                f"ประมวลผล {file_name} เสร็จสิ้น",
+                progress_logger,
+                {"file_name": file_name}
+            )
+
+        return {
+            "photo_id": new_photo.id,
+            "uploaded_at": new_photo.uploaded_at.isoformat(),
+            "file_name": new_photo.file_name,
+            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview_{new_photo.file_name}")
+        }
+
+    except Exception as e:
+        progress_logger.processed_files += 1
+        progress_logger.failed_files += 1
+        if websocket:
+            await send_upload_progress(
+                websocket,
+                f"ล้มเหลวในการประมวลผล {getattr(file, 'filename', 'unknown')}",
+                progress_logger,
+                {"error": str(e)},
+                "error"
+            )
+        logger.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์ {getattr(file, 'filename', 'unknown')}: {str(e)}")
+        return None
+    finally:
+        # Clean up resources
+        if not file.file.closed:
+            await file.close()
+        gc.collect()
+
 @router.websocket("/ws/upload-progress/{event_id}")
 async def upload_progress_websocket(
         websocket: WebSocket,
         event_id: int,
         current_user: User = Depends(get_ws_current_active_user)
 ):
+    connection_id = f"{event_id}_{current_user.id}"
     try:
         await websocket.accept()
-        connection_id = f"{event_id}_{current_user.id}"
         active_connections[connection_id] = websocket
 
+        # Send initial connection status
+        await websocket.send_json({
+            "type": "connected",
+            "message": "Upload progress connection established",
+            "event_id": event_id,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # Set up heartbeat to keep connection alive
+        heartbeat_task = asyncio.create_task(send_heartbeat(websocket))
+        
         try:
-            # ส่งข้อความยืนยันการเชื่อมต่อ
-            await websocket.send_json({
-                "type": "connected",
-                "message": "Upload progress connection established",
-                "event_id": event_id
-            })
-
-            # รอรับข้อความจาก client
             while True:
-                data = await websocket.receive_json()
-                if data.get("type") == "upload_complete":
-                    # ส่งสถานะเสร็จสิ้นกลับไป
+                try:
+                    # Set timeout for receiving messages
+                    data = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+                    
+                    if data.get("type") == "upload_complete":
+                        await websocket.send_json({
+                            "type": "upload_status",
+                            "status": "completed",
+                            "message": "All files uploaded successfully",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        break
+                    elif data.get("type") == "ping":
+                        await websocket.send_json({
+                            "type": "pong",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        
+                except asyncio.TimeoutError:
+                    # Send ping to check if client is still alive
                     await websocket.send_json({
-                        "type": "upload_status",
-                        "status": "completed",
-                        "message": "All files uploaded successfully"
+                        "type": "ping",
+                        "timestamp": datetime.utcnow().isoformat()
                     })
-                    break
-
+                    
         except WebSocketDisconnect:
-            print(f"Client disconnected: {connection_id}")
+            logger.info(f"Client disconnected: {connection_id}")
         finally:
+            # Clean up
+            heartbeat_task.cancel()
             if connection_id in active_connections:
                 del active_connections[connection_id]
+                logger.info(f"Cleaned up connection: {connection_id}")
 
     except Exception as e:
-        logging.error(f"WebSocket error: {str(e)}")
-        await websocket.close(code=1011)
+        logger.error(f"WebSocket error: {str(e)}")
+        try:
+            await websocket.close(code=1011)
+        except:
+            pass
+        if connection_id in active_connections:
+            del active_connections[connection_id]
+
+async def send_heartbeat(websocket: WebSocket):
+    """Send periodic heartbeat to keep connection alive"""
+    try:
+        while True:
+            await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+            if not websocket.client_disconnected:
+                await websocket.send_json({
+                    "type": "heartbeat",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Heartbeat error: {str(e)}")
 
 async def send_upload_progress(
     websocket: WebSocket,
@@ -1053,8 +1461,11 @@ async def send_upload_progress(
     data: dict = None,
     level: str = "info"
 ):
-    """Send formatted progress update through WebSocket"""
+    """Send formatted progress update through WebSocket with error handling"""
     try:
+        if websocket.client_disconnected:
+            return
+            
         log_data = {
             "type": "upload_progress",
             "level": level,
@@ -1067,6 +1478,7 @@ async def send_upload_progress(
         logger.info(f"Progress sent: {message}")
     except Exception as e:
         logger.error(f"Error sending progress update: {e}")
+        # Don't raise the exception to prevent disrupting the upload process
 
 
 

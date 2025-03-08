@@ -14,8 +14,6 @@ from app.db.models.PhotoFaceVector import PhotoFaceVector
 def insert_face_vector(db: Session, photo_id: int, vector_data: str):
     """Insert face vector data into PhotoFaceVector table"""
     vector_array = np.array(json.loads(vector_data), dtype=np.float32)
-    if vector_array.size != 128:
-        raise ValueError("Vector must be 128-dimensional")
 
     face_vector = PhotoFaceVector(
         photo_id=photo_id,

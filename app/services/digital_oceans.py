@@ -102,6 +102,78 @@ def generate_presigned_url(file_path: str, expiration: int = 3600):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating presigned URL: {e}")
 
+def sanitize_file_path(file_path: str) -> str:
+    """
+    Sanitize file path to prevent path traversal and injection attacks.
+    """
+    # Remove path traversal patterns
+    sanitized = re.sub(r'\.\./', '', file_path)
+    sanitized = re.sub(r'\.\.\\', '', sanitized)
+
+    # Replace potentially dangerous characters
+    sanitized = re.sub(r'[^a-zA-Z0-9_\-./]', '_', sanitized)
+
+    # Remove leading slashes to prevent accessing root
+    sanitized = sanitized.lstrip('/')
+
+    return sanitized
+
+def generate_presigned_upload_url(file_path: str, expiration: int = 3600, content_type: str = None):
+    """
+    Generate a presigned URL for uploading files to DigitalOcean Spaces with security measures.
+
+    Args:
+        file_path: Path where the file will be stored in Spaces
+        expiration: Expiration time in seconds (default: 1 hour)
+        content_type: Content type of the file (optional)
+
+    Returns:
+        Presigned URL for uploading
+    """
+    try:
+        # Sanitize file path to prevent injection
+        safe_file_path = sanitize_file_path(file_path)
+
+        # Validate and restrict expiration time
+        if expiration > 86400:  # Max 24 hours
+            expiration = 86400
+            logger.warning(f"Reduced expiration time to 24 hours for {safe_file_path}")
+
+        # Validate content type if specified
+        if content_type:
+            allowed_types = [
+                'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+                'image/svg+xml', 'application/pdf', 'application/x-photoshop'
+            ]
+            if content_type not in allowed_types:
+                logger.warning(f"Invalid content type: {content_type}")
+                raise HTTPException(status_code=400, detail="Invalid content type")
+
+        # Create S3 client
+        s3_client = boto3.client('s3',
+                                 endpoint_url=settings.SPACES_ENDPOINT,
+                                 aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
+                                 aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY)
+
+        # Generate presigned URL
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': "snapgoated",
+                'Key': safe_file_path,
+                'ContentType': content_type,
+                'ACL': 'private'
+            },
+            ExpiresIn=expiration
+        )
+
+        logger.info(f"Generated upload URL for {safe_file_path}")
+        return presigned_url
+
+    except Exception as e:
+        logger.error(f"Error generating upload URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating upload URL: {str(e)}")
+
 def delete_file_from_spaces(file_path: str):
     s3_client = boto3.client('s3',
                              aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
