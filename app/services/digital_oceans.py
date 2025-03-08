@@ -102,15 +102,20 @@ def generate_presigned_url(file_path: str, expiration: int = 3600):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating presigned URL: {e}")
 
+
 def sanitize_file_path(file_path: str) -> str:
     """
     Sanitize file path to prevent path traversal and injection attacks.
+    Also handles duplicate naming pattern using underscore format (name_1 instead of name (1)).
     """
     # Remove path traversal patterns
     sanitized = re.sub(r'\.\./', '', file_path)
     sanitized = re.sub(r'\.\.\\', '', sanitized)
 
-    # Replace potentially dangerous characters
+    # Convert existing (n) pattern to _n pattern
+    sanitized = re.sub(r' ?\((\d+)\)', r'_\1', sanitized)
+
+    # Replace potentially dangerous characters (space is allowed but will be converted to underscore)
     sanitized = re.sub(r'[^a-zA-Z0-9_\-./]', '_', sanitized)
 
     # Remove leading slashes to prevent accessing root
@@ -156,6 +161,7 @@ def generate_presigned_upload_url(file_path: str, expiration: int = 3600, conten
                                  aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY)
 
         # Generate presigned URL
+        print("safe_file_path: ", safe_file_path)
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
             Params={

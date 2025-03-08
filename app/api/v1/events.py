@@ -944,14 +944,14 @@ async def create_upload_urls(
         new_file_name = file_name
 
         if is_duplicate:
-            # Generate new name if duplicate
+            # Generate new name if duplicate using underscore pattern
             name, ext = file_name.rsplit('.', 1) if '.' in file_name else (file_name, '')
             counter = 1
 
-            while f"{name} ({counter}).{ext}" in processed_names:
+            while f"{name}_{counter}.{ext}" in processed_names:
                 counter += 1
 
-            new_file_name = f"{name} ({counter}).{ext}" if ext else f"{name} ({counter})"
+            new_file_name = f"{name}_{counter}.{ext}" if ext else f"{name}_{counter}"
 
             # Add the new name to processed names
             processed_names.add(new_file_name)
@@ -977,7 +977,7 @@ async def create_upload_urls(
             preview_url = generate_presigned_upload_url(
                 file_path=preview_file_path,
                 expiration=3600,
-                content_type="image/webp" if content_type.startswith("image/") else content_type
+                content_type=content_type
             )
 
             result.append({
