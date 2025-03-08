@@ -12,7 +12,7 @@ class PhotoFaceVector(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     photo_id = Column(Integer, ForeignKey('photos.id', ondelete='CASCADE'), nullable=False)
-    vector = Column(Vector(128), nullable=False)
+    vector = Column(Vector(512), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
 
     photo = relationship('Photo', back_populates='face_vectors')

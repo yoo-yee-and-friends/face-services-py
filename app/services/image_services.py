@@ -9,7 +9,7 @@ from fastapi import UploadFile
 
 from app.schemas.user import Response
 from app.services.digital_oceans import generate_presigned_url
-from app.utils.model.face_detect import process_image_main_face, _detect_faces_safe
+from app.utils.model.face_detect import process_image_main_face, _detect_faces_safe, detect_faces_with_insightface
 from app.db.queries.image_queries import get_images_with_vectors
 from sqlalchemy.orm import Session
 import json
@@ -23,8 +23,17 @@ CACHE_SIZE = 128
 
 @lru_cache(maxsize=CACHE_SIZE)
 def calculate_similarity(query_vector_tuple: tuple, stored_vector_tuple: tuple) -> float:
-    query_vector = np.array(query_vector_tuple)
-    stored_vector = np.array(stored_vector_tuple)
+    query_vector = np.array(query_vector_tuple, dtype=np.float32)
+    stored_vector = np.array(stored_vector_tuple, dtype=np.float32)
+
+    # ตรวจสอบความถูกต้องของเวกเตอร์
+    if np.isnan(query_vector).any() or np.isnan(stored_vector).any():
+        return 0.0  # ถ้ามีค่า NaN ถือว่าไม่เหมือนกัน
+
+    # ป้องกัน zero-length vector
+    if np.all(query_vector == 0) or np.all(stored_vector == 0):
+        return 0.0
+
     return 1 - cosine(query_vector, stored_vector)
 
 async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: float = THRESHOLD) -> List[Dict]:
@@ -75,60 +84,66 @@ def retry_on_exception(exception, retries=3, delay=2):
 async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     matches_faces = []
     try:
+        print("Processing Start")
         print("Processing image:", file.filename)
-        threshold = 0.95
+        threshold = 0.6
 
-        # Read file once
+        # อ่านไฟล์เพียงครั้งเดียว
         file_content = await file.read()
+        file_bytes = BytesIO(file_content)
 
-        # Run CPU-intensive face detection in a thread pool
-        query_vector = await asyncio.get_event_loop().run_in_executor(
-            None,  # Uses default executor
-            lambda: _detect_faces_safe(BytesIO(file_content), is_main_face=True, max_faces=1)
-        )
+        # เรียกใช้ InsightFace แทน dlib
+        query_vector = await detect_faces_with_insightface(file_bytes, is_main_face=True)
 
-        if not query_vector:
+        if not query_vector or len(query_vector) == 0:
             return Response(
-                message="No face detected in the uploaded image",
+                message="ไม่พบใบหน้าในภาพที่อัปโหลด",
                 status_code=400,
                 status="Error",
                 data={"matches": []}
             )
 
-        # Get first face vector
+        # ใช้ใบหน้าแรกที่ตรวจพบ
         query_vector = query_vector[0]
 
-        # Get vectors from DB
+        # ดึงเวกเตอร์จากฐานข้อมูล
         results = get_images_with_vectors(db, event_id)
 
-        # Process matches in batches
+        # ประมวลผลเป็นชุดๆ เพื่อประสิทธิภาพ
         for i in range(0, len(results), BATCH_SIZE):
             batch = results[i:i + BATCH_SIZE]
-            # Allow other requests to be processed
             batch_matches = await process_batch(query_vector, batch, threshold)
             matches_faces.extend(batch_matches)
-            await asyncio.sleep(0)  # Yield control
+            await asyncio.sleep(0)  # คืนการควบคุม
 
         matches_faces = sorted(matches_faces, key=lambda x: x['uploaded_at'])
 
     except Exception as e:
-        print(f"Error processing file: {file.filename}")
-        print(f"Error message: {str(e)}")
+        print(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์: {file.filename}")
+        print(f"ข้อความผิดพลาด: {str(e)}")
         traceback_lines = traceback.format_exc().splitlines()
         error_line = traceback_lines[-2]
-        print(f"Error occurred at: {error_line}")
+        print(f"ข้อผิดพลาดเกิดขึ้นที่: {error_line}")
         return Response(
-            message=f"Error processing image: {str(e)}",
+            message=f"เกิดข้อผิดพลาดในการประมวลผลภาพ: {str(e)}",
             status_code=500,
             status="Error",
             data={"matches": []}
         )
 
-    message = "Matching images found" if matches_faces else "No matching images found"
-    return Response(
-        message=message,
-        status_code=200,
-        status="Success",
-        data={"matches": matches_faces}
-    )
+    message = "พบภาพที่ตรงกัน" if matches_faces else "ไม่พบภาพที่ตรงกัน"
+    if matches_faces:
+        return Response(
+            message=message,
+            status_code=200,
+            status="Success",
+            data={"matches": matches_faces}
+        )
+    else:
+        return Response(
+            message=message,
+            status_code=404,  # ใช้ 404 เพื่อแสดงว่าไม่พบข้อมูล
+            status="NotFound",
+            data={"matches": []}
+        )
 
