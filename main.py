@@ -8,6 +8,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.events import router as events_router
 from app.api.v1.cities import router as cities_router
 from app.api.v1.client import public_router
+from app.tasks.scheduler import start_scheduler
 
 tags_metadata = [
     {
@@ -40,6 +41,10 @@ app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(cities_router, prefix="/api/v1", tags=["cities"])
 app.include_router(public_router, prefix="/api/v1", tags=["public"])
 
+@app.on_event("startup")
+async def startup_event():
+    # เริ่มต้น scheduler เมื่อแอปเริ่มทำงาน
+    start_scheduler()
 
 if __name__ == "__main__":
     import uvicorn

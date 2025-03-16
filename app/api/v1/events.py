@@ -939,13 +939,16 @@ async def create_upload_urls(
         if not file_name:
             continue
 
-        # Check for duplicates
-        is_duplicate = file_name in processed_names
-        new_file_name = file_name
+        # แก้ไขชื่อไฟล์เพื่อป้องกันปัญหา
+        clean_file_name = sanitize_filename(file_name)
+
+        # ตรวจสอบซ้ำ
+        is_duplicate = clean_file_name in processed_names
+        new_file_name = clean_file_name
 
         if is_duplicate:
-            # Generate new name if duplicate using underscore pattern
-            name, ext = file_name.rsplit('.', 1) if '.' in file_name else (file_name, '')
+            # สร้างชื่อใหม่ถ้าซ้ำ
+            name, ext = clean_file_name.rsplit('.', 1) if '.' in clean_file_name else (clean_file_name, '')
             counter = 1
 
             while f"{name}_{counter}.{ext}" in processed_names:
@@ -953,30 +956,29 @@ async def create_upload_urls(
 
             new_file_name = f"{name}_{counter}.{ext}" if ext else f"{name}_{counter}"
 
-            # Add the new name to processed names
+            # เพิ่มชื่อใหม่ในรายการที่ประมวลผลแล้ว
             processed_names.add(new_file_name)
-
         else:
-            # Add original name to processed names
-            processed_names.add(file_name)
+            # เพิ่มชื่อเดิมในรายการที่ประมวลผลแล้ว
+            processed_names.add(clean_file_name)
 
-        # Original file path
+        # พาธไฟล์ต้นฉบับ
         file_path = f"{base_path}/{new_file_name}"
 
-        # Preview file path
+        # พาธไฟล์พรีวิว
         preview_file_path = f"{base_path}/preview/{new_file_name}"
 
         try:
             upload_url = generate_presigned_upload_url(
-                file_path=file_path,
-                expiration=3600,
-                content_type=content_type
+                file_path,
+                3600,
+                content_type
             )
 
             preview_url = generate_presigned_upload_url(
-                file_path=preview_file_path,
-                expiration=3600,
-                content_type=content_type
+                preview_file_path,
+                3600,
+                content_type
             )
 
             result.append({
@@ -989,6 +991,11 @@ async def create_upload_urls(
 
         except Exception as e:
             logger.error(f"Error generating upload URL for {file_name}: {str(e)}")
+            return Response(
+                message=f"Error generating upload URL for {file_name}: {str(e)}",
+                status_code=500,
+                status="error"
+            )
 
     return Response(
         message=f"Generated {len(result)} upload URLs successfully",
@@ -998,6 +1005,37 @@ async def create_upload_urls(
             "urls": result
         }
     )
+
+
+def sanitize_filename(filename: str) -> str:
+    """
+    ทำความสะอาดชื่อไฟล์เพื่อป้องกันปัญหาในการอัพโหลดและการเข้าถึง
+    """
+    if not filename:
+        return "unnamed_file"
+
+    # แยกนามสกุลไฟล์
+    name_parts = filename.rsplit('.', 1)
+    name = name_parts[0]
+    extension = name_parts[1] if len(name_parts) > 1 else ""
+
+    # แทนที่ช่องว่างด้วย underscore
+    name = name.replace(' ', '_')
+
+    # กรองอักขระพิเศษที่อาจมีปัญหา
+    # เก็บเฉพาะตัวอักษร ตัวเล�� _ และ -
+    import re
+    name = re.sub(r'[^\w\-]', '', name)
+
+    # จำกัดความยาวชื่อไฟล์
+    max_length = 200  # รวมนามสกุล
+    if len(name) + len(extension) + 1 > max_length:
+        name = name[:max_length - len(extension) - 1]
+
+    # รวมนามสกุลกลับเข้าไป
+    if extension:
+        return f"{name}.{extension}"
+    return name
 
 
 @router.post("/process-uploaded-images", response_model=Response)
@@ -1036,22 +1074,130 @@ async def process_uploaded_images(
             status="error"
         )
 
+    # บันทึกข้อมูลรูปภาพลง DB ทันที
+    image_records = await save_images_to_database(images, event_id, current_user.id, db)
+
+    # เริ่มการตรวจจับใบหน้าในพื้นหลัง
     background_tasks.add_task(
-        process_images_in_background,
-        images=images,
+        process_face_detection_background,
+        image_records=image_records,
         event_id=event_id,
-        user_id=current_user.id,
         db_session_maker=SessionLocal
     )
 
     # ส่งการตอบกลับทันที
     return Response(
-        message="การประมวลผลรูปภาพเริ่มต้นในเบื้องหลัง",
-        status_code=202,
+        message="บันทึกรูปภาพเรียบร้อยและเริ่มการตรวจจับใบหน้าในพื้นหลัง",
+        status_code=200,
         status="success",
-        data={"total_images": len(images)}
+        data={"total_images": len(images), "processing_faces": True}
     )
 
+
+# ส่วนแรก: อัพเดทข้อมูลรูปภาพลงฐานข้อมูลทันที
+async def save_images_to_database(images: list, event_id: int, user_id: int, db: Session):
+    """บันทึกข้อมูลรู���ภาพลงฐานข้อมูลทันที หลังจากอัพโหลด"""
+    results = []
+
+    for image in images:
+        try:
+            file_name = image.get("name")
+            file_path = f"{user_id}/{event_id}/"
+
+            # สร้าง record ในฐานข้อมูล
+            new_photo = Photo(
+                file_name=file_name,
+                file_path=file_path,
+                size=image.get("size", 0),
+                is_detected_face=False,  # ยังไม่ได้ตรวจจับใบหน้า
+            )
+
+            db.add(new_photo)
+            db.flush()  # ให้ได้ ID ก่อนที่จะ commit
+
+            # เพิ่มความสัมพันธ์กับ event
+            event_photo = EventPhoto(
+                event_id=event_id,
+                photo_id=new_photo.id
+            )
+            db.add(event_photo)
+
+            # เก็บข้อมูลสำหรับการประมวลผลใบหน้าในภายหลัง
+            results.append({
+                "photo_id": new_photo.id,
+                "file_name": file_name,
+                "file_path": file_path
+            })
+        except Exception as e:
+            logger.error(f"เกิดข้อผิดพลาดในการบันทึกรูปภาพ {file_name}: {str(e)}")
+
+    # อัพเดทข้อมูล event
+    event = db.query(Event).filter(Event.id == event_id).first()
+    event.total_image_count += len(results)
+
+    db.commit()
+
+    return results
+
+
+# ส่วนที่สอง: ตรวจจับใบหน้าในพื้นหลัง
+async def process_face_detection_background(image_records: list, event_id: int, db_session_maker):
+    """ประมวลผลการตรวจจับใบหน้าในพื้นหลังด้วย insightface"""
+    with db_session_maker() as db:
+        try:
+            event = db.query(Event).filter(Event.id == event_id).first()
+            event.is_processing_face_detection = True
+            db.commit()
+
+            s3_client = boto3.client('s3',
+                                    aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
+                                    aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY,
+                                    endpoint_url=settings.SPACES_ENDPOINT)
+
+            for image_record in image_records:
+                try:
+                    photo_id = image_record["photo_id"]
+                    file_path = f"{image_record['file_path']}{image_record['file_name']}"
+
+                    # ดึงรูปภาพจาก DigitalOcean Spaces
+                    response = s3_client.get_object(Bucket='snapgoated', Key=file_path)
+                    image_data = response['Body'].read()
+
+                    # ตรวจจับใบหน้าด้วย insightface แทน dlib
+                    with io.BytesIO(image_data) as image_bytes:
+                        vectors = await detect_faces_with_insightface(image_bytes, False)
+
+                    # อัพเดทฐานข้อมูล
+                    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+                    if photo and vectors is not None:
+                        photo.is_detected_face = True
+                        db.commit()
+
+                        # บันทึกเวกเตอร์ใบหน้า
+                        for vector in vectors:
+                            if isinstance(vector, np.ndarray):
+                                vector = vector.astype(np.float32)  # ทำให้แน่ใจว่า vector อยู่ในรูปแบบ float32
+                            insert_face_vector(db, photo_id, json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector))
+
+                        logger.info(f"ตรวจพบใบหน้าในรูปภาพ ID {photo_id}")
+
+                except Exception as e:
+                    logger.error(f"เกิดข้อผิดพลาดในการตรวจจับใบหน้าสำหรับรูปภาพ ID {image_record.get('photo_id')}: {str(e)}")
+
+            # อัพเดทสถานะ event เมื่อเสร็จสิ้น
+            event = db.query(Event).filter(Event.id == event_id).first()
+            event.is_processing_face_detection = False
+            db.commit()
+
+        except Exception as e:
+            logger.error(f"เกิดข้อผ��ดพลาดในการประมวลผลใบหน้าในพื้นหลัง: {str(e)}")
+            try:
+                # พยายามอัพเดทสถานะกลับเป็น false
+                event = db.query(Event).filter(Event.id == event_id).first()
+                event.is_processing_face_detection = False
+                db.commit()
+            except Exception as inner_e:
+                logger.error(f"ไม่สามารถรีเซ็ตสถานะการประมวลผล: {str(inner_e)}")
 
 async def process_images_in_background(
         images: list,
@@ -1708,6 +1854,92 @@ async def send_upload_progress(
     except Exception as e:
         logger.error(f"Error sending progress update: {e}")
         # Don't raise the exception to prevent disrupting the upload process
+
+
+def cleanup_orphaned_files():
+    """
+    ตรวจสอบและลบไฟล์ที่ไม่���ีในฐานข้อมูลออกจาก DigitalOcean Spaces
+    รันทุกวั���ตอนเที่ยงคืน
+    """
+    logger.info("เริ่มต้นการทำความสะอาดไฟล์ที่ไม่มีในฐานข้อมูล")
+
+    # เชื่อมต่อกับ DigitalOcean Spaces
+    s3_client = boto3.client('s3',
+                             aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
+                             aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY,
+                             endpoint_url=settings.SPACES_ENDPOINT)
+
+    # ดึงรายการไฟล์ทั้งหมด (อาจต้องใช้ pagination หากมีไฟล์จำนวนมาก)
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket='snapgoated')
+
+        deleted_count = 0
+        checked_count = 0
+
+        # ตรวจสอบทีละหน้า
+        for page in pages:
+            if 'Contents' not in page:
+                continue
+
+            for obj in page['Contents']:
+                key = obj['Key']
+                checked_count += 1
+
+                # ข้ามไฟล์ที่อยู่ในโฟลเดอร์ preview หรือ settings
+                if '/preview/' in key or '/settings/' in key:
+                    continue
+
+                # แยกเส้นทางและชื่อไฟล์
+                path_parts = key.split('/')
+                if len(path_parts) < 2:
+                    continue
+
+                file_name = path_parts[-1]
+                file_path = '/'.join(path_parts[:-1]) + '/'
+
+                # ตรวจสอบในฐานข้อมูล
+                with SessionLocal() as db:
+                    db_file = db.query(Photo).filter(
+                        Photo.file_name == file_name,
+                        Photo.file_path == file_path
+                    ).first()
+
+                    if not db_file:
+                        # ไฟล์ไม่มีในฐานข้อมูล ให้ลบทั้งไฟล์ต้นฉบับและพรีวิว
+                        try:
+                            # ลบไฟล์ต้นฉบับ
+                            s3_client.delete_object(Bucket='snapgoated', Key=key)
+
+                            # ลบไฟล์พรีวิว
+                            preview_key = f"{file_path}preview/{file_name}"
+                            s3_client.delete_object(Bucket='snapgoated', Key=preview_key)
+
+                            deleted_count += 1
+                            logger.info(f"ลบไฟล์: {key} และ {preview_key}")
+
+                            if deleted_count % 100 == 0:
+                                logger.info(f"ลบไฟล์ไปแล้ว {deleted_count} รายการ")
+
+                        except Exception as e:
+                            logger.error(f"เกิดข้อผิดพลาดในการลบไฟล์ {key}: {str(e)}")
+
+        logger.info(
+            f"การทำความสะอาดเสร็จสิ้น: ตรวจสอบไปแล้ว {checked_count} รายการ, ลบไปทั้งหมด {deleted_count} รายการ")
+        return {
+            "success": True,
+            "checked_files": checked_count,
+            "deleted_files": deleted_count,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"เกิดข้อผิดพลาดในการทำความสะอาดไฟล์: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 
 
