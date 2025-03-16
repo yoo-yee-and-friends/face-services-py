@@ -297,7 +297,7 @@ def get_event_details(
             "uploaded_at": photo.uploaded_at,
             "file_name": photo.file_name,
             "preview_url": generate_presigned_url(
-                f"{photo.file_path}preview_{photo.file_name}"
+                f"{photo.file_path}preview/{photo.file_name}"
             )
         }
         for photo in photos
@@ -371,7 +371,7 @@ def get_folder_details(
             "uploaded_at": photo.uploaded_at,
             "file_name": photo.filen_ame.split('/')[-1],
             "preview_url": generate_presigned_url(
-                f"{photo.file_path}/preview_{photo.file_name}")
+                f"{photo.file_path}/preview/{photo.file_name}")
         }
         for photo in photos
     ]
@@ -413,7 +413,7 @@ def delete_event(
                 # Store file paths before deletion
                 cover_paths = [
                     f"{cover_photo.file_path}{cover_photo.file_name}",
-                    f"{cover_photo.file_path}preview_{cover_photo.file_name}"
+                    f"{cover_photo.file_path}preview/{cover_photo.file_name}"
                 ]
                 for path in cover_paths:
                     delete_file_from_spaces(path)
@@ -426,7 +426,7 @@ def delete_event(
             # Store paths before deletion
             photo_paths = [
                 f"{photo.file_path}{photo.file_name}",
-                f"{photo.file_path}preview_{photo.file_name}"
+                f"{photo.file_path}preview/{photo.file_name}"
             ]
             # Delete vectors first
             db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
@@ -450,7 +450,7 @@ def delete_event(
                 # Store paths before deletion
                 photo_paths = [
                     f"{photo.file_path}{photo.file_name}",
-                    f"{photo.file_path}preview_{photo.file_name}"
+                    f"{photo.file_path}preview/{photo.file_name}"
                 ]
                 # Delete database records first
                 db.query(PhotoFaceVector).filter(PhotoFaceVector.photo_id == photo.id).delete()
@@ -592,7 +592,7 @@ async def handle_file_upload(
 
         preview_bytes = io.BytesIO()
         image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
-        preview_path = f"{file_path}/preview_{file_name}"
+        preview_path = f"{file_path}/preview/{file_name}"
         preview_bytes.seek(0)
 
         upload_files_to_spaces(preview_bytes, preview_path)
@@ -659,7 +659,7 @@ async def handle_file_upload(
             "photo_id": new_photo.id,
             "uploaded_at": new_photo.uploaded_at.isoformat(),
             "file_name": new_photo.file_name,
-            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview_{new_photo.file_name}")
+            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview/{new_photo.file_name}")
         }
     }
 
@@ -712,7 +712,7 @@ async def delete_file(websocket: WebSocket, event_id: int, file_id: int, db: Ses
         })
 
     delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
-    delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
+    delete_file_from_spaces(f"{photo.file_path}preview/{photo.file_name}")
 
     # Update event file size and count
     event = db.query(Event).filter(Event.id == event_id).first()
@@ -771,7 +771,7 @@ async def delete_folder(websocket: WebSocket, event_id: int, folder_id: int, db:
     ).all()
     for photo in photos:
         delete_file_from_spaces(f"{photo.file_path}{photo.file_name}")
-        delete_file_from_spaces(f"{photo.file_path}preview_{photo.file_name}")
+        delete_file_from_spaces(f"{photo.file_path}preview/{photo.file_name}")
 
         # Update event file size and count
         event = db.query(Event).filter(Event.id == event_id).first()
@@ -964,10 +964,9 @@ async def create_upload_urls(
         file_path = f"{base_path}/{new_file_name}"
 
         # Preview file path
-        preview_file_path = f"{base_path}/preview_{new_file_name}"
+        preview_file_path = f"{base_path}/preview/{new_file_name}"
 
         try:
-            # Generate presigned URLs
             upload_url = generate_presigned_upload_url(
                 file_path=file_path,
                 expiration=3600,
@@ -995,8 +994,238 @@ async def create_upload_urls(
         message=f"Generated {len(result)} upload URLs successfully",
         status_code=200,
         status="success",
-        data={"urls": result}  # ครอบด้วย dictionary
+        data={
+            "urls": result
+        }
     )
+
+
+@router.post("/process-uploaded-images", response_model=Response)
+async def process_uploaded_images(
+        request: dict,
+        background_tasks: BackgroundTasks,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    event_id = request.get("eventId")
+    images = request.get("images", [])
+
+    if not event_id:
+        return Response(
+            message="ต้องระบุ Event ID",
+            status_code=400,
+            status="error"
+        )
+
+    if not images:
+        return Response(
+            message="ไม่มีรูปภาพที่ระบุ",
+            status_code=400,
+            status="error"
+        )
+
+    event = db.query(Event).filter(
+        Event.id == event_id,
+        Event.user_id == current_user.id
+    ).first()
+
+    if not event:
+        return Response(
+            message="ไม่พบอีเวนต์หรือไม่มีสิทธิ์เข้าถึง",
+            status_code=404,
+            status="error"
+        )
+
+    background_tasks.add_task(
+        process_images_in_background,
+        images=images,
+        event_id=event_id,
+        user_id=current_user.id,
+        db_session_maker=SessionLocal
+    )
+
+    # ส่งการตอบกลับทันที
+    return Response(
+        message="การประมวลผลรูปภาพเริ่มต้นในเบื้องหลัง",
+        status_code=202,
+        status="success",
+        data={"total_images": len(images)}
+    )
+
+
+async def process_images_in_background(
+        images: list,
+        event_id: int,
+        user_id: int,
+        db_session_maker
+):
+    with db_session_maker() as db:
+        try:
+            event = db.query(Event).filter(Event.id == event_id).first()
+            event.is_processing_face_detection = True
+            db.commit()
+
+            current_user = db.query(User).filter(User.id == user_id).first()
+
+            s3_client = boto3.client('s3',
+                                     aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
+                                     aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY,
+                                     endpoint_url=settings.SPACES_ENDPOINT)
+
+            processed_results = []
+
+            for image in images:
+                file_name = image.get("name")
+                is_preview = image.get("isPreviewFile", False)
+                base_path = f"{current_user.id}/{event_id}"
+                original_key = f"{base_path}/{file_name}"
+                preview_key = f"{base_path}/preview/{file_name}"
+
+                try:
+                    if is_preview:
+                        try:
+                            s3_client.head_object(Bucket='snapgoated', Key=preview_key)
+                        except Exception as e:
+                            processed_results.append({
+                                "name": file_name,
+                                "success": False,
+                                "error": f"ไม่พบไฟล์พรีวิว: {str(e)}"
+                            })
+                            continue
+
+                        image_obj = io.BytesIO()
+                        s3_client.download_fileobj('snapgoated', preview_key, image_obj)
+
+                        face_vectors = await detect_faces_with_insightface(image_obj, is_main_face=False, max_faces=20)
+
+                    else:
+
+                        try:
+                            s3_client.head_object(Bucket='snapgoated', Key=original_key)
+                        except Exception as e:
+                            processed_results.append({
+                                "name": file_name,
+                                "success": False,
+                                "error": f"ไม่พบไฟล์ต้นฉบับ: {str(e)}"
+                            })
+                            continue
+
+                        image_obj = io.BytesIO()
+                        s3_client.download_fileobj('snapgoated', original_key, image_obj)
+
+                        try:
+                            try:
+                                s3_client.head_object(Bucket='snapgoated', Key=preview_key)
+                                preview_exists = True
+                            except:
+                                preview_exists = False
+
+                            if not preview_exists:
+                                image_obj.seek(0)
+                                with Image.open(image_obj) as img:
+                                    img = img.convert('RGB')
+                                    max_size = (800, 800)
+                                    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+                                    preview_obj = io.BytesIO()
+                                    img.save(preview_obj, format='JPEG', quality=85)
+                                    preview_obj.seek(0)
+
+                                    s3_client.upload_fileobj(preview_obj, 'snapgoated', preview_key)
+
+                            image_obj.seek(0)
+                            face_vectors = await detect_faces_with_insightface(image_obj, is_main_face=False,
+                                                                               max_faces=5)
+
+                        except Exception as e:
+                            processed_results.append({
+                                "name": file_name,
+                                "success": False,
+                                "error": f"เกิดข้อผิดพลาดในการประมวลผลภาพ: {str(e)}"
+                            })
+                            continue
+
+                    photo = db.query(Photo).filter(
+                        Photo.file_name == file_name,
+                        Photo.file_path == f"{base_path}/"
+                    ).first()
+
+                    if not photo:
+                        photo = Photo(
+                            file_name=file_name,
+                            file_path=f"{base_path}/",
+                            uploaded_at=datetime.utcnow(),
+                            is_detected_face=True if face_vectors else False,
+                            is_face_verified=True
+                        )
+                        db.add(photo)
+                        db.flush()
+
+                        event_photo = EventPhoto(
+                            event_id=event_id,
+                            photo_id=photo.id
+                        )
+                        db.add(event_photo)
+
+                        try:
+                            obj = s3_client.head_object(Bucket='snapgoated', Key=original_key)
+                            file_size = obj.get('ContentLength', 0)
+                            event = db.query(Event).filter(Event.id == event_id).first()
+                            event.total_image_count += 1
+                            event.total_image_size += file_size
+                        except Exception as e:
+                            logger.error(f"เกิดข้อผิดพลาดในการดึงขนาดไฟล์: {str(e)}")
+                    else:
+                        photo.is_detected_face = True if face_vectors else False
+                        photo.is_face_verified = True
+
+                    if face_vectors and len(face_vectors) > 0:
+                        for vector in face_vectors:
+                            if isinstance(vector, np.ndarray) and len(vector) == 512:
+                                face_vector = PhotoFaceVector(
+                                    photo_id=photo.id,
+                                    vector=vector.tolist()
+                                )
+                                db.add(face_vector)
+                            else:
+                                logger.error(
+                                    f"ข้ามเวกเตอร์ที่มีขนาดไม่ถูกต้อง: {len(vector) if hasattr(vector, '__len__') else 'unknown'}")
+
+                    db.commit()
+
+                    processed_results.append({
+                        "name": file_name,
+                        "success": True,
+                        "has_faces": bool(face_vectors),
+                        "face_count": len(face_vectors) if face_vectors else 0
+                    })
+
+                except Exception as e:
+                    db.rollback()
+                    processed_results.append({
+                        "name": file_name,
+                        "success": False,
+                        "error": str(e)
+                    })
+                    logger.error(f"เกิดข้อผิดพลาดในการประมวลผลรูปภาพ {file_name}: {str(e)}")
+
+            event = db.query(Event).filter(Event.id == event_id).first()
+            event.is_processing_face_detection = False
+            db.commit()
+
+            logger.info(
+                f"การประมวลผลภาพเสร็จสิ้น สำหรับอีเวนต์ {event_id}: สำเร็จ {sum(1 for r in processed_results if r.get('success'))} จาก {len(images)}")
+
+        except Exception as e:
+            logger.error(f"เกิดข้อผิดพลาดในการประมวลผลภาพในเบื้องหลัง: {str(e)}")
+            try:
+                with db_session_maker() as db:
+                    event = db.query(Event).filter(Event.id == event_id).first()
+                    if event:
+                        event.is_processing_face_detection = False
+                        db.commit()
+            except Exception as inner_e:
+                logger.error(f"เกิดข้อผิดพลาดในการรีเซ็ตสถานะการประมวลผล: {str(inner_e)}")
 
 async def process_files_in_background(
         files: List[UploadFile],
@@ -1143,7 +1372,7 @@ async def process_single_file(
                 with io.BytesIO() as output:
                     image.save(output, format="WEBP", quality=50, optimize=True)
                     output.seek(0)
-                    preview_path = f"{file_path}/preview_{file_name}"
+                    preview_path = f"{file_path}/preview/{file_name}"
                     upload_files_to_spaces(output, preview_path)
 
         # Process face detection
@@ -1211,7 +1440,7 @@ async def process_single_file(
             "photo_id": new_photo.id,
             "uploaded_at": new_photo.uploaded_at.isoformat(),
             "file_name": new_photo.file_name,
-            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview_{new_photo.file_name}")
+            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview/{new_photo.file_name}")
         }
 
     except Exception as e:
@@ -1279,7 +1508,7 @@ async def process_single_file_insightface(
                 image.thumbnail(max_size, Image.LANCZOS)
                 image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
                 preview_bytes.seek(0)
-                preview_path = f"{file_path}/preview_{file_name}"
+                preview_path = f"{file_path}/preview/{file_name}"
                 upload_files_to_spaces(preview_bytes, preview_path)
         except Exception as e:
             logger.error(f"Error creating preview for {file_name}: {str(e)}")
@@ -1350,7 +1579,7 @@ async def process_single_file_insightface(
             "photo_id": new_photo.id,
             "uploaded_at": new_photo.uploaded_at.isoformat(),
             "file_name": new_photo.file_name,
-            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview_{new_photo.file_name}")
+            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview/{new_photo.file_name}")
         }
 
     except Exception as e:

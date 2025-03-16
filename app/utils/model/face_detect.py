@@ -171,17 +171,6 @@ def initialize_insightface():
 
 
 async def detect_faces_with_insightface(img_bytes, is_main_face=True, max_faces=20):
-    """
-    ตรวจจับใบหน้าด้วย InsightFace และส่งคืน embedding vectors พร้อมปรับขนาดภาพเพื่อประสิทธิภาพ
-
-    Args:
-        img_bytes: BytesIO object ของรูปภาพ
-        is_main_face: ถ้า True จะส่งคืนเฉพาะใบหน้าที่ใหญ่สุด
-        max_faces: จำนวนใบหน้าสูงสุดที่จะตรวจจับ
-
-    Returns:
-        List of face embedding vectors หรือ None ถ้าไม่พบใบหน้า
-    """
     try:
         analyzer = initialize_insightface()
 
@@ -190,33 +179,11 @@ async def detect_faces_with_insightface(img_bytes, is_main_face=True, max_faces=
 
         # แปลงข้อมูล bytes เป็นรูปภาพ
         with Image.open(img_bytes) as pil_image:
-            # แปลงเป็น RGB เพื่อความสม่ำเสมอ
-            pil_image = pil_image.convert('RGB')
-            width, height = pil_image.size
-
-            # ขนาดที่เหมาะสมสำหรับการตรวจจับใบหน้า
-            min_dimension = 300
-            optimal_dimension = 800
-            max_dimension = 1024
-
-            # คำนวณอัตราส่วนการปรับขนาด
-            if width < min_dimension or height < min_dimension:
-                # เพิ่มขนาดภาพเล็กเกินไป
-                scale = min_dimension / min(width, height)
-            elif width > max_dimension or height > max_dimension:
-                # ลดขนาดภาพใหญ่เกินไป
-                scale = max_dimension / max(width, height)
-            else:
-                # ปรับเป็นขนาดที่เหมาะสม
-                scale = optimal_dimension / max(width, height)
-
-            # ปรับขนาดหากจำเป็น (เมื่อเปลี่ยนแปลงมากกว่า 10%)
-            if abs(scale - 1.0) > 0.1:
-                new_size = (int(width * scale), int(height * scale))
-                pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
-
-            # แปลงเป็น numpy array
-            img_array = np.asarray(pil_image)
+            img_array = np.array(pil_image)
+            if len(img_array.shape) == 2:  # แปลงภาพขาวดำเป็น RGB
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+            elif img_array.shape[2] == 4:  # แปลง RGBA เป็น RGB
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
 
         # ตรวจจับใบหน้า
         faces = analyzer.get(img_array)
@@ -229,13 +196,28 @@ async def detect_faces_with_insightface(img_bytes, is_main_face=True, max_faces=
         face_embeddings = []
         if is_main_face:
             # เฉพาะใบหน้าที่ใหญ่ที่สุด
-            face_embeddings.append(faces[0].embedding)
+            embedding = faces[0].embedding
+            print("Embedding size:", len(embedding))
+            # ตรวจสอบขนาดเวกเตอร์
+            if embedding is not None and len(embedding) == 512:
+                face_embeddings.append(embedding)
+            else:
+                print(f"ขนาดเวกเตอร์ไม่ถูกต้อง: {len(embedding) if embedding is not None else 'None'}")
         else:
             # หลายใบหน้าตามขีดจำกัด
             for face in faces[:max_faces]:
-                face_embeddings.append(face.embedding)
+                embedding = face.embedding
+                # ตรวจสอบขนาดเวกเตอร์
+                if embedding is not None and len(embedding) == 512:
+                    face_embeddings.append(embedding)
+                else:
+                    print(f"ขนาดเวกเตอร์ไม่ถูกต้อง: {len(embedding) if embedding is not None else 'None'}")
 
-        return face_embeddings
+        return face_embeddings if face_embeddings else None
+
     except Exception as e:
-        print(f"Error in InsightFace detection: {e}")
+        print(f"เกิดข้อผิดพลาดในการตรวจจับใบหน้า: {str(e)}")
         return None
+    finally:
+        # ล้างหน่วยความจำ
+        gc.collect()

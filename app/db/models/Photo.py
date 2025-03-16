@@ -19,6 +19,7 @@ class Photo(Base):
     file_path = Column(Text, nullable=False)
     size = Column(BigInteger, default=0, nullable=False)
     is_detected_face = Column(Boolean, default=False, nullable=False)
+    is_face_verified = Column(Boolean, default=False, nullable=False)
 
     user = relationship("User", back_populates="profile_photo")
     event = relationship("Event", back_populates="cover_photo", uselist=False)

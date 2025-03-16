@@ -61,7 +61,7 @@ async def process_batch(query_vector: np.ndarray, batch: List[Dict], threshold: 
                 "file_name": record.photo.file_name,
                 "uploaded_at": record.photo.uploaded_at,
                 "preview_url": generate_presigned_url(
-                    f"{record.photo.file_path}preview_{record.photo.file_name}"),
+                    f"{record.photo.file_path}preview/{record.photo.file_name}"),
                 "download_url": generate_presigned_url(f"{record.photo.file_path}{record.photo.file_name}")
             })
     return matches

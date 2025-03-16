@@ -27,6 +27,7 @@ class Event(Base):
     total_image_size = Column(BigInteger, default=0, nullable=False)
     total_image_count = Column(Integer, default=0, nullable=False)
     publish_at = Column(DateTime, nullable=True)
+    is_processing_face_detection = Column(Boolean, default=False, nullable=False)
 
     user = relationship("User", back_populates="events")
     country = relationship("Country", back_populates="events", lazy="joined")
