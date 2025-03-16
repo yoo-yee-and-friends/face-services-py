@@ -986,7 +986,7 @@ async def create_upload_urls(
                 "url": upload_url,
                 "url_preview": preview_url,
                 "isDuplicate": is_duplicate,
-                "newFileName": new_file_name if is_duplicate else ""
+                "newFileName": new_file_name
             })
 
         except Exception as e:
