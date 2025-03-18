@@ -9,13 +9,12 @@ def start_scheduler():
     print("Starting scheduler...")
     scheduler = BackgroundScheduler()
 
-    # ตั้งเวลาให้ทำงานทุกๆ 5 นาที
     scheduler.add_job(
         cleanup_orphaned_files,
         trigger=CronTrigger(hour=0, minute=0),
         id='cleanup_files_job',
         replace_existing=True,
-        max_instances=1,  # กำหนดให้มีการทำงานแค่ 1 งานในเวลาเดียวกัน
+        max_instances=1,
     )
 
     scheduler.start()

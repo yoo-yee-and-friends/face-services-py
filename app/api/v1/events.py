@@ -394,9 +394,20 @@ def get_folder_details(
 @router.delete("/delete-event", response_model=Response)
 def delete_event(
         event_id: int,
+        page: int = 1,
+        limit: int = 10,
+        status: str = "",  # Changed to str to handle empty string case
+        search: Optional[str] = None,
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_active_user)
 ):
+    status_filter = None
+    if status:
+        if status.lower() == "true":
+            status_filter = True
+        elif status.lower() == "false":
+            status_filter = False
+
     event = db.query(Event).filter(Event.id == event_id, Event.user_id == current_user.id).first()
     if not event:
         return Response(
@@ -472,10 +483,33 @@ def delete_event(
         db.delete(event)
         db.commit()
 
+        # Get filtered events after deletion
+        if page < 1:
+            return Response(
+                message="Page number must be greater than 0",
+                status="error",
+                status_code=400
+            )
+
+        query = get_event_query(db, current_user, status_filter, search)
+        total_events = query.count()
+        events = paginate_query(query, page, limit)
+        total_pages = (total_events + limit - 1) // limit
+        events_data = format_event_data(events)
+
         return Response(
             message="Event deleted successfully",
             status="success",
-            status_code=200
+            status_code=200,
+            data={
+                "total_events": total_events,
+                "total_pages": total_pages,
+                "current_page": page,
+                "events_per_page": limit,
+                "events": events_data,
+                "current_search": search or "",
+                "current_status": status  # Use the original string value
+            }
         )
 
     except Exception as e:
