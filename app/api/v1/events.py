@@ -1108,8 +1108,24 @@ async def process_uploaded_images(
             status="error"
         )
 
-    # บันทึกข้อมูลรูปภาพลง DB ทันที
+    # บันทึกข้อมูลรูปภาพลง DB
     image_records = await save_images_to_database(images, event_id, current_user.id, db)
+
+    # สร้าง URL preview สำหรับแต่ละรูปภาพ
+    preview_urls = []
+    for image_record in image_records:
+        file_path = image_record.get("file_path")
+        file_name = image_record.get("file_name")
+        photo_id = image_record.get("photo_id")
+
+        # สร้าง URL สำหรับรูปภาพ preview
+        preview_url = generate_presigned_url(f"{file_path}preview/{file_name}")
+
+        preview_urls.append({
+            "photo_id": photo_id,
+            "file_name": file_name,
+            "preview_url": preview_url
+        })
 
     # เริ่มการตรวจจับใบหน้าในพื้นหลัง
     background_tasks.add_task(
@@ -1119,12 +1135,16 @@ async def process_uploaded_images(
         db_session_maker=SessionLocal
     )
 
-    # ส่งการตอบกลับทันที
+    # ส่งการตอบกลับพร้อม URL preview
     return Response(
         message="บันทึกรูปภาพเรียบร้อยและเริ่มการตรวจจับใบหน้าในพื้นหลัง",
         status_code=200,
         status="success",
-        data={"total_images": len(images), "processing_faces": True}
+        data={
+            "total_images": len(images),
+            "processing_faces": True,
+            "preview_images": preview_urls
+        }
     )
 
 
