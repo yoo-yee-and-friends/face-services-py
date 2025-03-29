@@ -1122,9 +1122,10 @@ async def process_uploaded_images(
         preview_url = generate_presigned_url(f"{file_path}preview/{file_name}")
 
         preview_urls.append({
-            "photo_id": photo_id,
+            "id": photo_id,
             "file_name": file_name,
-            "preview_url": preview_url
+            "preview_url": preview_url,
+            "uploaded_at": image_record.get("uploaded_at", datetime.utcnow().isoformat())
         })
 
     # เริ่มการตรวจจับใบหน้าในพื้นหลัง
