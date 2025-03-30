@@ -25,11 +25,14 @@ RUN python -m pip install --upgrade pip
 # ติดตั้ง dependencies จาก requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ติดตั้ง gunicorn โดยตรงเพื่อความมั่นใจ
+RUN pip install --no-cache-dir gunicorn
+
 # คัดลอกโค้ดโปรเจกต์ทั้งหมดไปยัง container
 COPY . .
 
 # ระบุ port ที่ container จะใช้งาน (กรณี FastAPI)
 EXPOSE 8000
 
-# คำสั่งเริ่มต้นเมื่อ container รัน (ใช้ uvicorn สำหรับ FastAPI)
-CMD ["gunicorn", "--config", "gunicorn_conf.py", "main:app"]
+# แก้ไขเป็น
+CMD ["python", "-m", "gunicorn", "--config", "gunicorn_conf.py", "main:app"]
