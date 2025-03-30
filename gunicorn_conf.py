@@ -14,6 +14,10 @@ web_concurrency = int(os.getenv("WEB_CONCURRENCY", multiprocessing.cpu_count()))
 max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", multiprocessing.cpu_count() * 2))
 min_workers = int(os.getenv("GUNICORN_MIN_WORKERS", 2))
 
+# เพิ่มตัวแปรเกี่ยวกับการจัดการหน่วยความจำ
+max_worker_memory_mb = int(os.getenv("MAX_WORKER_MEMORY_MB", 4096))  # จำกัดหน่วยความจำต่อ worker (MB)
+preload_app = os.getenv("PRELOAD_APP", "false").lower() == "true"  # โหลดแอพครั้งเดียวเพื่อประหยัดหน่วยความจำ
+
 # การตั้งค่าพื้นฐานสำหรับ Gunicorn
 bind = os.getenv("BIND", "0.0.0.0:8000")
 worker_class = os.getenv("WORKER_CLASS", "uvicorn.workers.UvicornWorker")
@@ -43,11 +47,15 @@ def get_system_load():
     """ดึงข้อมูลการใช้งาน CPU และหน่วยความจำ"""
     try:
         cpu = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory().percent
-        return cpu, memory
+        memory = psutil.virtual_memory()
+
+        # คำนวณหน่วยความจำที่เหลือเป็น MB
+        available_memory_mb = memory.available / (1024 * 1024)
+
+        return cpu, memory.percent, available_memory_mb
     except Exception as e:
         logger.error(f"Error getting system metrics: {e}")
-        return 0, 0
+        return 0, 0, 0
 
 
 def on_starting(server):
@@ -57,6 +65,18 @@ def on_starting(server):
     last_scaling_time = time.time()
     logger.info(f"Starting with {workers} workers (min={min_workers}, max={max_workers})")
 
+    # ตรวจสอบหน่วยความจำเริ่มต้น
+    _, _, available_memory_mb = get_system_load()
+    memory_per_worker_estimate = 500  # ประมาณการใช้หน่วยความจำของ worker แต่ละตัว
+
+    if available_memory_mb < memory_per_worker_estimate * workers:
+        logger.warning(f"ไม่มีหน่วยความจำเพียงพอสำหรับ {workers} workers. เหลือ: {available_memory_mb:.1f}MB, "
+                       f"ต้องการประมาณ: {memory_per_worker_estimate * workers}MB")
+        # ปรับจำนวน worker ตามหน่วยความจำที่มี
+        adjusted_workers = max(min_workers, int(available_memory_mb / memory_per_worker_estimate))
+        logger.warning(f"ปรับจำนวน workers จาก {workers} เป็น {adjusted_workers}")
+        server.num_workers = adjusted_workers
+
 
 def pre_fork(server, worker):
     """ก่อนสร้าง worker processes"""
@@ -65,7 +85,16 @@ def pre_fork(server, worker):
 
 def post_fork(server, worker):
     """หลังสร้าง worker processes"""
-    pass
+    # จำกัดหน่วยความจำของ worker
+    try:
+        import resource
+        # จำกัดหน่วยความจำเป็น soft limit (หน่วย bytes)
+        resource.setrlimit(resource.RLIMIT_AS,
+                         (max_worker_memory_mb * 1024 * 1024,
+                          max_worker_memory_mb * 1024 * 1024 * 2))  # soft limit, hard limit
+        logger.info(f"Set memory limit for worker {worker.pid} to {max_worker_memory_mb}MB")
+    except (ImportError, ValueError) as e:
+        logger.warning(f"Could not set memory limit: {e}")
 
 
 def pre_exec(server):
@@ -87,39 +116,54 @@ def when_ready(server):
             # ตรวจสอบเป็นระยะ
             if current_time - last_check_time >= check_interval:
                 try:
-                    cpu, memory = get_system_load()
+                    cpu, memory_percent, available_memory_mb = get_system_load()
                     actual_workers = len(server.WORKERS.keys())
                     logger.info(
-                        f"System load - CPU: {cpu:.1f}%, Memory: {memory:.1f}%, Active workers: {actual_workers}")
+                        f"System load - CPU: {cpu:.1f}%, Memory: {memory_percent:.1f}%, Available memory: {available_memory_mb:.1f}MB, Workers: {actual_workers}")
 
-                    # เช็คว่าต้องการปรับขนาดหรือไม่
+                    # กำหนดหน่วยความจำขั้นต่ำที่ต้องการเหลือไว้ในระบบ
+                    min_required_memory_mb = 1000  # ต้องการหน่วยความจำเหลืออย่างน้อย 1GB
+
+                    # ลดจำนวน workers ทันทีถ้าหน่วยความจำเหลือน้อย
+                    if available_memory_mb < min_required_memory_mb and actual_workers > min_workers:
+                        worker_to_kill = list(server.WORKERS.values())[0]
+                        logger.warning(
+                            f"Low memory ({available_memory_mb:.1f}MB), reducing workers from {actual_workers} to {actual_workers - 1}")
+                        worker_to_kill.kill(signal.SIGTERM)
+                        last_scaling_time = current_time
+                        last_check_time = current_time
+                        signal.alarm(10)
+                        return
+
+                    # เช็คว่าควรปรับจำนวน workers หรือไม่
                     if current_time - last_scaling_time >= scaling_cooldown:
+                        # ลดจำนวน workers เมื่อ CPU ต่ำ
                         if cpu < cpu_threshold_down and actual_workers > min_workers:
-                            # ลดจำนวน workers
                             worker_to_kill = list(server.WORKERS.values())[0]
                             logger.info(
                                 f"Low CPU load ({cpu:.1f}%), reducing workers from {actual_workers} to {actual_workers - 1}")
                             worker_to_kill.kill(signal.SIGTERM)
                             last_scaling_time = current_time
-                        elif cpu > cpu_threshold_up and actual_workers < max_workers:
-                            # เพิ่มจำนวน workers
+                        # เพิ่มจำนวน workers เมื่อ CPU สูงและมีหน่วยความจำเพียงพอ
+                        elif cpu > cpu_threshold_up and actual_workers < max_workers and available_memory_mb > min_required_memory_mb * 2:
                             logger.info(
                                 f"High CPU load ({cpu:.1f}%), increasing workers from {actual_workers} to {actual_workers + 1}")
                             server.num_workers += 1
                             server.manage_workers()
                             last_scaling_time = current_time
 
-                    # เช็คหน่วยความจำสูงเกินไปหรือไม่
-                    if memory > memory_threshold:
-                        logger.warning(f"Memory usage is high: {memory:.1f}%")
+                    # แจ้งเตือนเมื่อหน่วยความจำสูง
+                    if memory_percent > memory_threshold:
+                        logger.warning(
+                            f"Memory usage is high: {memory_percent:.1f}%, available: {available_memory_mb:.1f}MB")
 
                 except Exception as e:
                     logger.error(f"Error in load monitoring: {e}")
 
                 last_check_time = current_time
 
-            # ตั้งค่า periodic timer
-            signal.alarm(10)  # ตรวจสอบทุก 10 วินาที
+            # ตั้งเวลาตรวจสอบครั้งต่อไป
+            signal.alarm(10)
 
         # ตั้งค่า handler และ timer
         old_handler = signal.signal(signal.SIGALRM, _monitor_load)

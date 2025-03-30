@@ -77,17 +77,27 @@ jobs:
                 -p 8000:8000 \
                 --memory="16g" \
                 --memory-swap="18g" \
-                -e WEB_CONCURRENCY="4" \
-                -e GUNICORN_MAX_WORKERS="8" \
+                --memory-reservation="14g" \
+                --oom-kill-disable=false \
+                --oom-score-adj=500 \
+                -e WEB_CONCURRENCY="2" \
+                -e GUNICORN_MAX_WORKERS="6" \
                 -e GUNICORN_MIN_WORKERS="2" \
-                -e GUNICORN_WORKER_CONNECTIONS="1000" \
-                -e AUTOSCALE_CHECK_INTERVAL="60" \
+                -e GUNICORN_WORKER_CONNECTIONS="500" \
+                -e AUTOSCALE_CHECK_INTERVAL="20" \
                 -e CPU_THRESHOLD_DOWN="30" \
                 -e CPU_THRESHOLD_UP="70" \
-                -e MEMORY_THRESHOLD="80" \
-                -e MAX_REQUESTS="2000" \
-                -e MAX_REQUESTS_JITTER="100" \
-                -e GRACEFUL_TIMEOUT="180" \
+                -e MEMORY_THRESHOLD="75" \
+                -e MAX_REQUESTS="1000" \
+                -e MAX_REQUESTS_JITTER="200" \
+                -e GRACEFUL_TIMEOUT="120" \
+                -e MAX_WORKER_MEMORY_MB="4096" \
+                -e PRELOAD_APP="true" \
+                -e LIMIT_REQUEST_LINE="8190" \
+                -e LIMIT_REQUEST_FIELDS="100" \
+                -e WORKER_TIMEOUT="120" \
+                -e KEEPALIVE="5" \
+                -e LOG_LEVEL="info" \
                 zz212224236/snapgoated-services:${{ github.sha }}
 
               # Verify that the container is running
