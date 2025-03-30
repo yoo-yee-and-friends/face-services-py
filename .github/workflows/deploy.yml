@@ -72,7 +72,23 @@ jobs:
               sudo docker pull zz212224236/snapgoated-services:${{ github.sha }}
 
               # Run the new Docker container - using a more robust approach
-              sudo docker run -d --name snapgoated-services --restart unless-stopped -p 8000:8000 zz212224236/snapgoated-services:${{ github.sha }}
+              sudo docker run -d --name snapgoated-services \
+                --restart unless-stopped \
+                -p 8000:8000 \
+                --memory="16g" \
+                --memory-swap="18g" \
+                -e WEB_CONCURRENCY="4" \
+                -e GUNICORN_MAX_WORKERS="8" \
+                -e GUNICORN_MIN_WORKERS="2" \
+                -e GUNICORN_WORKER_CONNECTIONS="1000" \
+                -e AUTOSCALE_CHECK_INTERVAL="60" \
+                -e CPU_THRESHOLD_DOWN="30" \
+                -e CPU_THRESHOLD_UP="70" \
+                -e MEMORY_THRESHOLD="80" \
+                -e MAX_REQUESTS="2000" \
+                -e MAX_REQUESTS_JITTER="100" \
+                -e GRACEFUL_TIMEOUT="180" \
+                zz212224236/snapgoated-services:${{ github.sha }}
 
               # Verify that the container is running
               sudo docker ps -a
