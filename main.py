@@ -8,6 +8,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.events import router as events_router
 from app.api.v1.cities import router as cities_router
 from app.api.v1.client import public_router
+from app.core.prometheus import setup_prometheus
 from app.tasks.scheduler import start_scheduler
 
 tags_metadata = [
@@ -22,6 +23,9 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_tags=tags_metadata,
 )
+
+prometheus = setup_prometheus()
+prometheus.instrument(app).expose(app, endpoint="/metrics")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter

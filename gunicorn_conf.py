@@ -10,13 +10,13 @@ import signal
 logger = logging.getLogger("gunicorn.conf")
 
 # ค่าพื้นฐาน
-web_concurrency = int(os.getenv("WEB_CONCURRENCY", multiprocessing.cpu_count()))
-max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", multiprocessing.cpu_count() * 2))
-min_workers = int(os.getenv("GUNICORN_MIN_WORKERS", 2))
+web_concurrency = int(os.getenv("WEB_CONCURRENCY", 1))  # เปลี่ยนจาก multiprocessing.cpu_count() เป็น 1
+max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", 2))  # เปลี่ยนจาก cpu_count() * 2 เป็น 2
+min_workers = int(os.getenv("GUNICORN_MIN_WORKERS", 1))  # เปลี่ยนจาก 2 เป็น 1
 
-# เพิ่มตัวแปรเกี่ยวกับการจัดการหน่วยความจำ
 max_worker_memory_mb = int(os.getenv("MAX_WORKER_MEMORY_MB", 4096))  # จำกัดหน่วยความจำต่อ worker (MB)
-preload_app = os.getenv("PRELOAD_APP", "false").lower() == "true"  # โหลดแอพครั้งเดียวเพื่อประหยัดหน่วยความจำ
+preload_app = os.getenv("PRELOAD_APP", "true").lower() == "true"  # เปลี่ยนจาก "false" เป็น "true
+preload = preload_app
 
 # การตั้งค่าพื้นฐานสำหรับ Gunicorn
 bind = os.getenv("BIND", "0.0.0.0:8000")
@@ -67,7 +67,7 @@ def on_starting(server):
 
     # ตรวจสอบหน่วยความจำเริ่มต้น
     _, _, available_memory_mb = get_system_load()
-    memory_per_worker_estimate = 500  # ประมาณการใช้หน่วยความจำของ worker แต่ละตัว
+    memory_per_worker_estimate = 2000  # ประมาณการใช้หน่วยความจำของ worker แต่ละตัว
 
     if available_memory_mb < memory_per_worker_estimate * workers:
         logger.warning(f"ไม่มีหน่วยความจำเพียงพอสำหรับ {workers} workers. เหลือ: {available_memory_mb:.1f}MB, "
@@ -122,7 +122,7 @@ def when_ready(server):
                         f"System load - CPU: {cpu:.1f}%, Memory: {memory_percent:.1f}%, Available memory: {available_memory_mb:.1f}MB, Workers: {actual_workers}")
 
                     # กำหนดหน่วยความจำขั้นต่ำที่ต้องการเหลือไว้ในระบบ
-                    min_required_memory_mb = 1000  # ต้องการหน่วยความจำเหลืออย่างน้อย 1GB
+                    min_required_memory_mb = 2000  # ต้องการหน่วยความจำเหลืออย่างน้อย 1GB
 
                     # ลดจำนวน workers ทันทีถ้าหน่วยความจำเหลือน้อย
                     if available_memory_mb < min_required_memory_mb and actual_workers > min_workers:
