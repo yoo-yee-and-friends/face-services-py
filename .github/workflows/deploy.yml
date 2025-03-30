@@ -80,9 +80,9 @@ jobs:
                 --memory-reservation="14g" \
                 --oom-kill-disable=false \
                 --oom-score-adj=500 \
-                -e WEB_CONCURRENCY="2" \
-                -e GUNICORN_MAX_WORKERS="6" \
-                -e GUNICORN_MIN_WORKERS="2" \
+                -e WEB_CONCURRENCY="1" \
+                -e GUNICORN_MAX_WORKERS="2" \
+                -e GUNICORN_MIN_WORKERS="1" \
                 -e GUNICORN_WORKER_CONNECTIONS="500" \
                 -e AUTOSCALE_CHECK_INTERVAL="20" \
                 -e CPU_THRESHOLD_DOWN="30" \
@@ -91,7 +91,7 @@ jobs:
                 -e MAX_REQUESTS="1000" \
                 -e MAX_REQUESTS_JITTER="200" \
                 -e GRACEFUL_TIMEOUT="120" \
-                -e MAX_WORKER_MEMORY_MB="4096" \
+                -e MAX_WORKER_MEMORY_MB="6144" \
                 -e PRELOAD_APP="true" \
                 -e LIMIT_REQUEST_LINE="8190" \
                 -e LIMIT_REQUEST_FIELDS="100" \
