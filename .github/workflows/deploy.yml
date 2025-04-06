@@ -120,6 +120,22 @@ jobs:
             # ล็อกอินเข้า Docker Hub ด้วย sudo
             echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             
+            # Stop the running container (if any) - improved handling
+              CONTAINER_ID=$(sudo docker ps -aq --filter name=snapgoated-services)
+              if [[ -n "$CONTAINER_ID" ]]; then
+                echo "Stopping container: $CONTAINER_ID"
+                sudo docker stop "$CONTAINER_ID"
+                echo "Removing container: $CONTAINER_ID"
+                sudo docker rm "$CONTAINER_ID"
+              fi
+
+              # Remove old images (optional, but good practice) - improved handling
+              IMAGE_ID=$(sudo docker images -aq zz212224236/snapgoated-services)
+              if [[ -n "$IMAGE_ID" ]]; then
+                echo "Removing image: $IMAGE_ID"
+                sudo docker rmi "$IMAGE_ID"
+              fi
+            
             # ใช้คำสั่ง docker-compose พร้อม sudo
             sudo docker-compose down
             sudo docker-compose up -d
