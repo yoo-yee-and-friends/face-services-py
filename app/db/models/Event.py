@@ -8,6 +8,7 @@ from app.db.models.Country import Country
 from app.db.models.EventFolder import EventFolder
 from app.db.models.Photo import Photo
 from app.db.models.EventPhoto import EventPhoto
+from app.db.models.City import City
 
 class Event(Base):
     __tablename__ = 'events'

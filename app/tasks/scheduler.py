@@ -6,7 +6,11 @@ from app.api.v1.events import cleanup_orphaned_files
 
 
 def start_scheduler():
-    print("Starting scheduler...")
+    """
+    ตั้งค่า scheduler สำหรับงานที่ไม่ได้ใช้ Celery
+    Celery beat จะรับผิดชอบงานที่กำหนดใน celery_app.conf.beat_schedule
+    """
+    print("Starting scheduler for non-Celery tasks...")
     scheduler = BackgroundScheduler()
 
     scheduler.add_job(

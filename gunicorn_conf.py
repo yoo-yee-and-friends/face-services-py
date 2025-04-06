@@ -10,11 +10,13 @@ import signal
 logger = logging.getLogger("gunicorn.conf")
 
 # ค่าพื้นฐาน
-web_concurrency = int(os.getenv("WEB_CONCURRENCY", 1))  # เปลี่ยนจาก multiprocessing.cpu_count() เป็น 1
-max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", 2))  # เปลี่ยนจาก cpu_count() * 2 เป็น 2
-min_workers = int(os.getenv("GUNICORN_MIN_WORKERS", 1))  # เปลี่ยนจาก 2 เป็น 1
+web_concurrency = int(os.getenv("WEB_CONCURRENCY", 1))
+max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", 1))  # ลดเหลือ 1
+min_workers = int(os.getenv("GUNICORN_MIN_WORKERS", 1))
 
-max_worker_memory_mb = int(os.getenv("MAX_WORKER_MEMORY_MB", 4096))  # จำกัดหน่วยความจำต่อ worker (MB)
+max_worker_memory_mb = int(os.getenv("MAX_WORKER_MEMORY_MB", 512))  # จำกัดหน่วยความจำต่อ worker (MB)
+memory_per_worker_estimate = 500
+min_required_memory_mb = 500
 preload_app = os.getenv("PRELOAD_APP", "true").lower() == "true"  # เปลี่ยนจาก "false" เป็น "true
 preload = preload_app
 
@@ -32,15 +34,16 @@ keepalive = int(os.getenv("KEEP_ALIVE", 5))
 worker_tmp_dir = "/dev/shm"
 
 # ตัวแปรควบคุม autoscaling
-check_interval = int(os.getenv("AUTOSCALE_CHECK_INTERVAL", 60))  # ตรวจสอบทุก 60 วินาที
-cpu_threshold_down = float(os.getenv("CPU_THRESHOLD_DOWN", 30))  # ลด workers เมื่อ CPU ต่ำกว่า 30%
-cpu_threshold_up = float(os.getenv("CPU_THRESHOLD_UP", 70))  # เพิ่ม workers เมื่อ CPU สูงกว่า 70%
-memory_threshold = float(os.getenv("MEMORY_THRESHOLD", 80))  # แจ้งเตือนเมื่อหน่วยความจำสูงกว่า 80%
+check_interval = int(os.getenv("AUTOSCALE_CHECK_INTERVAL", 32))  # ตรวจสอบทุก 60 วินาที
+cpu_threshold_down = float(os.getenv("CPU_THRESHOLD_DOWN", 40))  # ลด workers เมื่อ CPU ต่ำกว่า 30%
+cpu_threshold_up = float(os.getenv("CPU_THRESHOLD_UP", 85))  # เพิ่ม workers เมื่อ CPU สูงกว่า 70%
+memory_threshold = float(os.getenv("MEMORY_THRESHOLD", 70))  # แจ้งเตือนเมื่อหน่วยความจำสูงกว่า 80%
 
 # สถานะการ autoscale
 last_check_time = 0
 last_scaling_time = 0
-scaling_cooldown = 180  # รอ 3 นาทีระหว่างการปรับขนาด
+scaling_cooldown = 120  # รอ 3 นาทีระหว่างการปรับขนาด
+memory_per_worker_estimate = 2000
 
 
 def get_system_load():
@@ -63,19 +66,25 @@ def on_starting(server):
     global last_check_time, last_scaling_time
     last_check_time = time.time()
     last_scaling_time = time.time()
-    logger.info(f"Starting with {workers} workers (min={min_workers}, max={max_workers})")
 
     # ตรวจสอบหน่วยความจำเริ่มต้น
-    _, _, available_memory_mb = get_system_load()
-    memory_per_worker_estimate = 2000  # ประมาณการใช้หน่วยความจำของ worker แต่ละตัว
+    _, memory_percent, available_memory_mb = get_system_load()
+    total_memory_mb = available_memory_mb / (1 - memory_percent / 100)
 
-    if available_memory_mb < memory_per_worker_estimate * workers:
-        logger.warning(f"ไม่มีหน่วยความจำเพียงพอสำหรับ {workers} workers. เหลือ: {available_memory_mb:.1f}MB, "
-                       f"ต้องการประมาณ: {memory_per_worker_estimate * workers}MB")
-        # ปรับจำนวน worker ตามหน่วยความจำที่มี
-        adjusted_workers = max(min_workers, int(available_memory_mb / memory_per_worker_estimate))
-        logger.warning(f"ปรับจำนวน workers จาก {workers} เป็น {adjusted_workers}")
-        server.num_workers = adjusted_workers
+    # คำนวณจำนวน workers ที่เหมาะสม
+    # สำรองหน่วยความจำ 25% สำหรับระบบและการประมวลผลอื่นๆ
+    usable_memory = total_memory_mb * 0.75
+    optimal_workers = int(usable_memory / memory_per_worker_estimate)
+
+    # จำกัดจำนวน workers ตามค่าที่กำหนดไว้
+    adjusted_workers = max(min_workers, min(optimal_workers, max_workers))
+
+    logger.info(f"Memory: Total={total_memory_mb:.1f}MB, Available={available_memory_mb:.1f}MB")
+    logger.info(
+        f"Setting workers to {adjusted_workers} (min={min_workers}, max={max_workers}, optimal={optimal_workers})")
+
+    # กำหนดจำนวน workers เริ่มต้น
+    server.num_workers = adjusted_workers
 
 
 def pre_fork(server, worker):

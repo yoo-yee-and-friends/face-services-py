@@ -9,12 +9,13 @@ from fastapi import UploadFile
 
 from app.schemas.user import Response
 from app.services.digital_oceans import generate_presigned_url
-from app.utils.model.face_detect import process_image_main_face, _detect_faces_safe, detect_faces_with_insightface
+from app.utils.model.face_detect import  detect_faces_with_insightface
 from app.db.queries.image_queries import get_images_with_vectors
 from sqlalchemy.orm import Session
 import json
 import traceback
 from scipy.spatial.distance import cosine
+from typing import Any
 
 BATCH_SIZE = 100
 THRESHOLD = 0.94
@@ -86,7 +87,7 @@ async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
     try:
         print("Processing Start")
         print("Processing image:", file.filename)
-        threshold = 0.45
+        threshold = get_system_setting(db, "face_similarity_threshold", 0.45)
 
         # อ่านไฟล์เพียงครั้งเดียว
         file_content = await file.read()
@@ -146,4 +147,39 @@ async def find_similar_faces(event_id: int, file: UploadFile, db: Session):
             status="NotFound",
             data={"matches": []}
         )
+
+
+@lru_cache(maxsize=128)
+def get_system_setting(db: Session, key: str, default_value: Any = None) -> Any:
+    """
+    ดึงค่าตั้งค่าจากฐานข้อมูล พร้อม caching เพื่อประสิทธิภาพ
+
+    Args:
+        db: Database session
+        key: คีย์ของการตั้งค่า
+        default_value: ค่าเริ่มต้นหากไม่พบข้อมูลในฐานข้อมูล
+
+    Returns:
+        ค่าของการตั้งค่า หรือค่าเริ่มต้นหากไม่พบข้อมูล
+    """
+    from app.db.models.SystemSettings import SystemSettings
+
+    setting = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+    if not setting:
+        return default_value
+
+    # แปลงค่าตามประเภทข้อมูล
+    try:
+        # กรณีเป็นตัวเลข
+        if setting.value.replace('.', '', 1).isdigit():
+            if '.' in setting.value:
+                return float(setting.value)
+            return int(setting.value)
+        # กรณีเป็น boolean
+        elif setting.value.lower() in ['true', 'false']:
+            return setting.value.lower() == 'true'
+        # กรณีอื่นๆ ให้คืนค่าเป็น string
+        return setting.value
+    except:
+        return setting.value
 
