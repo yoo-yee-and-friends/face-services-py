@@ -70,7 +70,7 @@ jobs:
                 deploy:
                   resources:
                     limits:
-                      memory: 8G
+                      memory: 2G
               worker:
                 image: zz212224236/snapgoated-services:${{ github.sha }}
                 command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2 --max-memory-per-child=4000000
@@ -84,7 +84,7 @@ jobs:
                 deploy:
                   resources:
                     limits:
-                      memory: 6G
+                      memory: 2G
               beat:
                 image: zz212224236/snapgoated-services:${{ github.sha }}
                 command: celery -A app.core.celery_app beat --loglevel=info
