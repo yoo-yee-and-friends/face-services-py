@@ -38,6 +38,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v2
 
+      - name: Install Docker Compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose
+
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v0.1.9
         with:
@@ -45,7 +50,7 @@ jobs:
             username: ubuntu
             key: ${{ secrets.EC2_SSH_KEY }}
             script: |
-              # อัพเดท docker-compose.yml บนเซิร์ฟเวอร์
+              # อัปเดต docker-compose.yml บนเซิร์ฟเวอร์
               cat > docker-compose.yml << 'EOL'
               version: '3.8'
 
@@ -120,23 +125,16 @@ jobs:
                 redis-data:
               EOL
 
-              # ตั้งค่า Docker Compose
-              sudo apt-get update
-              sudo apt-get install -y docker-compose-plugin
-              
-              # แสดงไฟล์ docker-compose ที่สร้าง
-              cat docker-compose.yml
-              
               # ลงทะเบียน Docker Hub
               echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
               
               # หยุดและรีสตาร์ทบริการ
-              sudo docker compose down
-              sudo docker compose up -d
+              sudo docker-compose down
+              sudo docker-compose up -d
               
               # ตรวจสอบสถานะ
-              sudo docker compose ps
-              
+              sudo docker-compose ps
+
       - name: Notify Discord
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -147,7 +145,7 @@ jobs:
         run: |
           GITHUB_SUCCESS="true"
           
-          PAYLOAD=$(echo -e "🚀 **Deployment Status: Compleated**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | jq -R --slurp '{content: .}')
+          PAYLOAD=$(echo -e "🚀 **Deployment Status: Completed**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | jq -R --slurp '{content: .}')
           
           curl -H "Content-Type: application/json" \
                -X POST \
