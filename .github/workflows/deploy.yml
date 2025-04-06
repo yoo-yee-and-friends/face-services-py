@@ -42,6 +42,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y docker-compose
+          docker-compose --version  # Verify installation
 
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v0.1.9
@@ -53,7 +54,6 @@ jobs:
               # อัปเดต docker-compose.yml บนเซิร์ฟเวอร์
               cat > docker-compose.yml << 'EOL'
               version: '3.8'
-
               services:
                 web:
                   image: zz212224236/snapgoated-services:${{ github.sha }}
@@ -74,7 +74,6 @@ jobs:
                     resources:
                       limits:
                         memory: 8G
-
                 worker:
                   image: zz212224236/snapgoated-services:${{ github.sha }}
                   command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2 --max-memory-per-child=4000000
@@ -89,7 +88,6 @@ jobs:
                     resources:
                       limits:
                         memory: 6G
-
                 beat:
                   image: zz212224236/snapgoated-services:${{ github.sha }}
                   command: celery -A app.core.celery_app beat --loglevel=info
@@ -100,7 +98,6 @@ jobs:
                     - redis
                     - web
                   restart: unless-stopped
-
                 flower:
                   image: zz212224236/snapgoated-services:${{ github.sha }}
                   command: celery -A app.core.celery_app flower --port=5555
@@ -114,13 +111,11 @@ jobs:
                     - web
                     - worker
                   restart: unless-stopped
-
                 redis:
                   image: redis:6-alpine
                   volumes:
                     - redis-data:/data
                   restart: unless-stopped
-
               volumes:
                 redis-data:
               EOL
@@ -145,8 +140,8 @@ jobs:
         run: |
           GITHUB_SUCCESS="true"
           
-          PAYLOAD=$(echo -e "🚀 **Deployment Status: Completed**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | jq -R --slurp '{content: .}')
-          
+          PAYLOAD=$(echo -e "🚀 **Deployment Status: Completed**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | [...]
+
           curl -H "Content-Type: application/json" \
                -X POST \
                -d "$PAYLOAD" \
