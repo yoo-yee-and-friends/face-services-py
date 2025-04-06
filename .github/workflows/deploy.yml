@@ -45,13 +45,14 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Install Docker Compose plugin (V2)
-            sudo apt-get update
-            sudo apt-get install -y docker-compose-plugin
+            # Install Docker Compose V1 directly
+            sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
             
             # Verify Docker Compose installation
-            docker compose version
+            docker-compose --version
             
+            # Create docker-compose.yml file
             cat > docker-compose.yml << 'EOL'
             version: '3.8'
             services:
@@ -120,14 +121,14 @@ jobs:
               redis-data:
             EOL
 
-            # Login to Docker Hub
+            # Login to Docker Hub - verify these secrets are correctly configured in GitHub
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             
-            # Use docker compose (V2) instead of docker-compose (V1)
-            sudo docker compose down
-            sudo docker compose up -d
+            # Use docker-compose V1 commands
+            docker-compose down
+            docker-compose up -d
             
-            sudo docker compose ps
+            docker-compose ps
 
     - name: Notify Discord
       env:
