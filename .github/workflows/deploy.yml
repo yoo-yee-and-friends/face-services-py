@@ -22,13 +22,12 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Build Docker Image
-      run: |
-        sudo docker build --no-cache -t zz212224236/snapgoated-services:${{ github.sha }} .
-
-    - name: Push Docker Image to Docker Hub
-      run: |
-        sudo docker push zz212224236/snapgoated-services:${{ github.sha }}
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: zz212224236/snapgoated-services:${{ github.sha }}
 
   deploy:
     needs: build
