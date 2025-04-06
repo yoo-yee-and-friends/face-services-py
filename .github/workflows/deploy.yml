@@ -24,11 +24,11 @@ jobs:
 
     - name: Build Docker Image
       run: |
-        docker build --no-cache -t zz212224236/snapgoated-services:${{ github.sha }} .
+        sudo docker build --no-cache -t zz212224236/snapgoated-services:${{ github.sha }} .
 
     - name: Push Docker Image to Docker Hub
       run: |
-        docker push zz212224236/snapgoated-services:${{ github.sha }}
+        sudo docker push zz212224236/snapgoated-services:${{ github.sha }}
 
   deploy:
     needs: build
@@ -45,14 +45,11 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Install Docker Compose V1 directly
+            # ติดตั้ง Docker Compose
             sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
             sudo chmod +x /usr/local/bin/docker-compose
             
-            # Verify Docker Compose installation
-            docker-compose --version
-            
-            # Create docker-compose.yml file
+            # สร้างไฟล์ docker-compose.yml
             cat > docker-compose.yml << 'EOL'
             version: '3.8'
             services:
@@ -121,14 +118,14 @@ jobs:
               redis-data:
             EOL
 
-            # Login to Docker Hub - verify these secrets are correctly configured in GitHub
-            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+            # ล็อกอินเข้า Docker Hub ด้วย sudo
+            echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             
-            # Use docker-compose V1 commands
-            docker-compose down
-            docker-compose up -d
+            # ใช้คำสั่ง docker-compose พร้อม sudo
+            sudo docker-compose down
+            sudo docker-compose up -d
             
-            docker-compose ps
+            sudo docker-compose ps
 
     - name: Notify Discord
       env:
