@@ -10,139 +10,138 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
+    - name: Checkout Code
+      uses: actions/checkout@v2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Docker Image
-        run: |
-          docker build --no-cache -t zz212224236/snapgoated-services:${{ github.sha }} .
+    - name: Build Docker Image
+      run: |
+        docker build --no-cache -t zz212224236/snapgoated-services:${{ github.sha }} .
 
-      - name: Push Docker Image to Docker Hub
-        run: |
-          docker push zz212224236/snapgoated-services:${{ github.sha }}
+    - name: Push Docker Image to Docker Hub
+      run: |
+        docker push zz212224236/snapgoated-services:${{ github.sha }}
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
+    - name: Checkout Code
+      uses: actions/checkout@v2
 
-      - name: Install Docker Compose
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y docker-compose
-          docker-compose --version  # Verify installation
+    - name: Deploy to EC2 via SSH
+      uses: appleboy/ssh-action@v0.1.9
+      with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Install Docker Compose plugin (V2)
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+            
+            # Verify Docker Compose installation
+            docker compose version
+            
+            cat > docker-compose.yml << 'EOL'
+            version: '3.8'
+            services:
+              web:
+                image: zz212224236/snapgoated-services:${{ github.sha }}
+                ports:
+                  - "8000:8000"
+                environment:
+                  - CELERY_BROKER_URL=redis://redis:6379/0
+                  - CELERY_RESULT_BACKEND=redis://redis:6379/0
+                  - OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+                  - WEB_CONCURRENCY=1
+                  - GUNICORN_MAX_WORKERS=2
+                  - GUNICORN_MIN_WORKERS=1
+                  - MAX_WORKER_MEMORY_MB=4096
+                depends_on:
+                  - redis
+                restart: unless-stopped
+                deploy:
+                  resources:
+                    limits:
+                      memory: 8G
+              worker:
+                image: zz212224236/snapgoated-services:${{ github.sha }}
+                command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2 --max-memory-per-child=4000000
+                environment:
+                  - CELERY_BROKER_URL=redis://redis:6379/0
+                  - CELERY_RESULT_BACKEND=redis://redis:6379/0
+                depends_on:
+                  - redis
+                  - web
+                restart: unless-stopped
+                deploy:
+                  resources:
+                    limits:
+                      memory: 6G
+              beat:
+                image: zz212224236/snapgoated-services:${{ github.sha }}
+                command: celery -A app.core.celery_app beat --loglevel=info
+                environment:
+                  - CELERY_BROKER_URL=redis://redis:6379/0
+                  - CELERY_RESULT_BACKEND=redis://redis:6379/0
+                depends_on:
+                  - redis
+                  - web
+                restart: unless-stopped
+              flower:
+                image: zz212224236/snapgoated-services:${{ github.sha }}
+                command: celery -A app.core.celery_app flower --port=5555
+                ports:
+                  - "5555:5555"
+                environment:
+                  - CELERY_BROKER_URL=redis://redis:6379/0
+                  - CELERY_RESULT_BACKEND=redis://redis:6379/0
+                depends_on:
+                  - redis
+                  - web
+                  - worker
+                restart: unless-stopped
+              redis:
+                image: redis:6-alpine
+                volumes:
+                  - redis-data:/data
+                restart: unless-stopped
+            volumes:
+              redis-data:
+            EOL
 
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v0.1.9
-        with:
-            host: ${{ secrets.EC2_HOST }}
-            username: ubuntu
-            key: ${{ secrets.EC2_SSH_KEY }}
-            script: |
-              # อัปเดต docker-compose.yml บนเซิร์ฟเวอร์
-              cat > docker-compose.yml << 'EOL'
-              version: '3.8'
-              services:
-                web:
-                  image: zz212224236/snapgoated-services:${{ github.sha }}
-                  ports:
-                    - "8000:8000"
-                  environment:
-                    - CELERY_BROKER_URL=redis://redis:6379/0
-                    - CELERY_RESULT_BACKEND=redis://redis:6379/0
-                    - OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-                    - WEB_CONCURRENCY=1
-                    - GUNICORN_MAX_WORKERS=2
-                    - GUNICORN_MIN_WORKERS=1
-                    - MAX_WORKER_MEMORY_MB=4096
-                  depends_on:
-                    - redis
-                  restart: unless-stopped
-                  deploy:
-                    resources:
-                      limits:
-                        memory: 8G
-                worker:
-                  image: zz212224236/snapgoated-services:${{ github.sha }}
-                  command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2 --max-memory-per-child=4000000
-                  environment:
-                    - CELERY_BROKER_URL=redis://redis:6379/0
-                    - CELERY_RESULT_BACKEND=redis://redis:6379/0
-                  depends_on:
-                    - redis
-                    - web
-                  restart: unless-stopped
-                  deploy:
-                    resources:
-                      limits:
-                        memory: 6G
-                beat:
-                  image: zz212224236/snapgoated-services:${{ github.sha }}
-                  command: celery -A app.core.celery_app beat --loglevel=info
-                  environment:
-                    - CELERY_BROKER_URL=redis://redis:6379/0
-                    - CELERY_RESULT_BACKEND=redis://redis:6379/0
-                  depends_on:
-                    - redis
-                    - web
-                  restart: unless-stopped
-                flower:
-                  image: zz212224236/snapgoated-services:${{ github.sha }}
-                  command: celery -A app.core.celery_app flower --port=5555
-                  ports:
-                    - "5555:5555"
-                  environment:
-                    - CELERY_BROKER_URL=redis://redis:6379/0
-                    - CELERY_RESULT_BACKEND=redis://redis:6379/0
-                  depends_on:
-                    - redis
-                    - web
-                    - worker
-                  restart: unless-stopped
-                redis:
-                  image: redis:6-alpine
-                  volumes:
-                    - redis-data:/data
-                  restart: unless-stopped
-              volumes:
-                redis-data:
-              EOL
+            # Login to Docker Hub
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+            
+            # Use docker compose (V2) instead of docker-compose (V1)
+            sudo docker compose down
+            sudo docker compose up -d
+            
+            sudo docker compose ps
 
-              # ลงทะเบียน Docker Hub
-              echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-              
-              # หยุดและรีสตาร์ทบริการ
-              sudo docker-compose down
-              sudo docker-compose up -d
-              
-              # ตรวจสอบสถานะ
-              sudo docker-compose ps
+    - name: Notify Discord
+      env:
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_COMMIT: ${{ github.event.head_commit.message }}
+        GITHUB_REPO: ${{ github.repository }}
+        GITHUB_RUN_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      run: |
+        GITHUB_SUCCESS="true"
 
-      - name: Notify Discord
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_COMMIT: ${{ github.event.head_commit.message }}
-          GITHUB_REPO: ${{ github.repository }}
-          GITHUB_RUN_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-        run: |
-          GITHUB_SUCCESS="true"
-          
-          PAYLOAD=$(echo -e "🚀 **Deployment Status: Completed**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | [...]
+        PAYLOAD=$(echo -e "🚀 **Deployment Status: Completed**\n  **Repository:** $GITHUB_REPO\n  **By:** $GITHUB_ACTOR\n  **Commit:** $GITHUB_COMMIT\n  **[View Action]($GITHUB_RUN_URL)**" | jq -Rs .)
 
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "$PAYLOAD" \
-               $DISCORD_WEBHOOK
+        curl -H "Content-Type: application/json" \
+             -X POST \
+             -d "$PAYLOAD" \
+             $DISCORD_WEBHOOK
