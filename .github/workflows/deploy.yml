@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Code
+    - name: Checkout Codeต
       uses: actions/checkout@v2
 
     - name: Set up Docker Buildx
@@ -140,7 +140,7 @@ jobs:
              sudo docker-compose down -v
             
               # ล้าง Celery tasks ที่ค้างอยู่ในคิวผ่าน Redis
-              sudo docker run --rm --network host redis:6-alpine redis-cli -h localhost FLUSHALL
+              -sudo docker run --rm --network host redis:6-alpine redis-cli -h localhost FLUSHALL
             
               # ลบ containers ที่หยุดทำงานแล้ว
               sudo docker container prune -f

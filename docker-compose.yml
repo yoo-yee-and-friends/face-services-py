@@ -11,30 +11,34 @@ services:
       - WEB_CONCURRENCY=1
       - GUNICORN_MAX_WORKERS=2
       - GUNICORN_MIN_WORKERS=1
-      - MAX_WORKER_MEMORY_MB=512
-      - MEMORY_LIMIT=70
+      - MAX_WORKER_MEMORY_MB=2048 # เพิ่มค่า
+      - CPU_THRESHOLD_UP=85
+      - CPU_THRESHOLD_DOWN=40
+      - MEMORY_THRESHOLD=70
     depends_on:
       - redis
-    volumes:
-      - ./:/app
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
 
   worker:
     build: .
-    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.core.celery_app worker -Q default,face_detection --loglevel=info --concurrency=1 --max-memory-per-child=2048000
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
       - redis
       - web
-    volumes:
-      - ./:/app
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 768M
+          cpus: '0.5'
+          memory: 1.5G
 
   beat:
     build: .
@@ -69,6 +73,12 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    command: >
+      redis-server --appendonly yes
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 300
+      --timeout 0
     restart: unless-stopped
 
 volumes:

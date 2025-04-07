@@ -11,12 +11,12 @@ logger = logging.getLogger("gunicorn.conf")
 
 # ค่าพื้นฐาน
 web_concurrency = int(os.getenv("WEB_CONCURRENCY", 1))
-max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", 1))  # ลดเหลือ 1
+max_workers = int(os.getenv("GUNICORN_MAX_WORKERS", 2))
 min_workers = int(os.getenv("GUNICORN_MIN_WORKERS", 1))
 
-max_worker_memory_mb = int(os.getenv("MAX_WORKER_MEMORY_MB", 512))  # จำกัดหน่วยความจำต่อ worker (MB)
+max_worker_memory_mb = int(os.getenv("MAX_WORKER_MEMORY_MB", 400))  # จำกัดหน่วยความจำต่อ worker (MB)
 memory_per_worker_estimate = 500
-min_required_memory_mb = 500
+min_required_memory_mb = 1000
 preload_app = os.getenv("PRELOAD_APP", "true").lower() == "true"  # เปลี่ยนจาก "false" เป็น "true
 preload = preload_app
 
@@ -189,6 +189,15 @@ def when_ready(server):
         # จะดำเนินต่อไปเรื่อยๆ จนกว่า Gunicorn จะปิดตัวลง
         pass
 
+def pre_request(worker, req):
+    req.headers['X-Req-Start-Time'] = str(time.time())
+
+def post_request(worker, req, environ, resp):
+    start_time = float(req.headers.get('X-Req-Start-Time', 0))
+    if start_time > 0:
+        duration = time.time() - start_time
+        if duration > 10:  # หากใช้เวลามากกว่า 10 วินาที
+            logger.warning(f"Slow request: {req.path} took {duration:.2f}s")
 
 def worker_int(worker):
     """เมื่อ worker ได้รับสัญญาณ INT"""

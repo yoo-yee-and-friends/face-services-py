@@ -12,21 +12,16 @@ import numpy as np
 import logging
 from PIL import Image
 from datetime import datetime
-
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(
-    bind=True,
-    acks_late=True,
-    time_limit=600,  # 10 minutes
-    soft_time_limit=540,  # 9 minutes
-    expires=3600,  # 1 hour
-    retry_backoff=True,
-    max_retries=3
-)
+@celery_app.task(bind=True,
+                 queue='face_detection',
+                 rate_limit='5/m',
+                 autoretry_for=(Exception,),
+                 retry_backoff=True,
+                 retry_kwargs={'max_retries': 3})
 def process_image_face_detection(self, file_name, file_path, event_id, user_id):
-    """ประมวลผลการตรวจจับใบหน้าในรูปภาพ"""
     try:
         with SessionLocal() as db:
             event = db.query(Event).filter(Event.id == event_id).first()

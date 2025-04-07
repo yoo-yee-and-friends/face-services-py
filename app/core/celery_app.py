@@ -1,31 +1,35 @@
 from celery import Celery
-from app.config.settings import settings
-import os
+from kombu import Exchange, Queue
 
-# กำหนดค่าพื้นฐาน
-celery_app = Celery(
-    "snapgoated",
-    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
-    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0"),
-    include=["app.tasks.face_detection"]
+celery_app = Celery("worker",
+                    broker="redis://localhost:6379/0",
+                    backend="redis://localhost:6379/0")
+
+# กำหนดคิวแยกชัดเจน
+task_queues = (
+    Queue('default', Exchange('default'), routing_key='default'),
+    Queue('face_detection', Exchange('face_detection'), routing_key='face_detection'),
 )
 
-# ตั้งค่า Celery
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="Asia/Bangkok",
-    task_acks_late=True,
-    worker_prefetch_multiplier=1,
-    worker_max_memory_per_child=4000000,  # รีสตาร์ท worker เมื่อใช้หน่วยความจำถึง 4GB
-)
-
-# กำหนดตารางเวลาทำงานอัตโนมัติ
-celery_app.conf.beat_schedule = {
-    'cleanup-orphaned-files-midnight': {
-        'task': 'app.tasks.maintenance.cleanup_orphaned_files',
-        'schedule': 86400.0,  # ทุก 24 ชั่วโมง
-        'options': {'expires': 3600}
-    },
+# กำหนด routes สำหรับงานต่างๆ
+task_routes = {
+    'app.tasks.face_detection.process_image_face_detection': {'queue': 'face_detection'},
+    # งานอื่นๆ จะเข้าคิว default โดยอัตโนมัติ
 }
+
+celery_app.autodiscover_tasks(['app.tasks'])
+
+celery_app.conf.update(
+    task_queues=task_queues,
+    task_routes=task_routes,
+    worker_prefetch_multiplier=1,  # ลดลงจาก 50 เป็น 1
+    task_acks_late=True,  # ยืนยันงานหลังทำเสร็จเท่านั้น
+    task_time_limit=3600,  # จำกัดเวลาทำงาน 1 ชั่วโมง
+    task_soft_time_limit=3000,  # แจ้งเตือนเมื่อใกล้หมดเวลา
+    worker_max_tasks_per_child=50,  # รีสตาร์ทโปรเซสหลังทำงาน 50 ชิ้น
+    broker_pool_limit=10,  # จำกัด connection pool
+    broker_connection_timeout=30,  # timeout การเชื่อมต่อ redis
+    broker_connection_max_retries=5,  # จำนวนลองใหม่สูงสุด
+    worker_concurrency=1,  # ทำงานทีละงาน
+    task_default_rate_limit='10/m',  # จำกัดอัตราการทำงาน
+)

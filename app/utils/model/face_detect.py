@@ -1,20 +1,11 @@
-import asyncio
 import gc
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List
 
-import dlib
 import numpy as np
 import cv2
-from fastapi import HTTPException
-from PIL import Image, UnidentifiedImageError
-from io import BytesIO
+from PIL import Image
 
 from insightface.app import FaceAnalysis
-
-face_rec_model = dlib.face_recognition_model_v1("model/dlib_face_recognition_resnet_model_v1.dat")
-shape_predictor = dlib.shape_predictor("model/shape_predictor_68_face_landmarks.dat")
-detector = dlib.get_frontal_face_detector()
 
 face_analyzer = None
 

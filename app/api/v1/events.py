@@ -27,22 +27,21 @@ from app.db.models.EventType import EventType
 from app.db.models.PhotoFaceVector import PhotoFaceVector
 from app.db.queries.image_queries import insert_face_vector
 from app.db.session import get_db, SessionLocal
-from app.schemas.event import Event as EventSchema, EventCreate, Credit
+from app.schemas.event import Credit
 from app.schemas.user import Response
-from app.security.auth import get_current_active_user, get_ws_current_active_user
-from typing import List, Dict, Any, Optional
+from app.security.auth import get_current_active_user
+from typing import Dict, Any, Optional
 
 from app.services.digital_oceans import upload_file_to_spaces, generate_presigned_url, create_folder_in_spaces, \
-    check_duplicate_name, upload_files_to_spaces, delete_file_from_spaces, generate_presigned_upload_url
+    check_duplicate_name, delete_file_from_spaces, generate_presigned_upload_url
 
 from app.db.models.User import User
 from app.db.models.Photo import Photo
 from app.db.models.Event import Event
 from app.db.models.EventCredit import EventCredit
 from app.utils.event_utils import get_event_query, paginate_query, format_event_data
-from app.utils.model.face_detect import detect_faces_with_insightface
 from app.utils.validation import validate_date_format
-from app.tasks.face_detection import process_event_images, process_image_face_detection
+from app.tasks.face_detection import process_image_face_detection
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -71,12 +70,13 @@ class UploadProgressLogger:
 
 @router.get("/events", response_model=Response)
 def get_events(
-    page: int = 1,
-    limit: int = 10,
-    status: Optional[bool] = None,
-    search: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+        page: int = 1,
+        limit: int = 10,
+        status: Optional[bool] = None,
+        search: Optional[str] = None,
+        update_processing_status: bool = True,  # พารามิเตอร์ใหม่สำหรับควบคุมการอัพเดทสถานะ
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_active_user)
 ):
     if page < 1:
         return Response(
@@ -88,6 +88,22 @@ def get_events(
     query = get_event_query(db, current_user, status, search)
     total_events = query.count()
     events = paginate_query(query, page, limit)
+
+    # ตรวจสอบและอัพเดทสถานะการประมวลผลใบหน้า
+    if update_processing_status:
+        for event in events:
+            if event.is_processing_face_detection:
+                # ตรวจสอบว่ามีรูปที่ยังไม่ได้ตรวจจับใบหน้าหรือไม่
+                unverified_count = db.query(Photo).join(EventPhoto).filter(
+                    EventPhoto.event_id == event.id,
+                    Photo.is_face_verified == False
+                ).count()
+
+                # ถ้าไม่มีรูปที่ยังไม่ได้ตรวจสอบ ให้อัพเดทสถานะของอีเวนต์
+                if unverified_count == 0:
+                    event.is_processing_face_detection = False
+                    db.commit()
+
     total_pages = (total_events + limit - 1) // limit
     events_data = format_event_data(events)
 
@@ -634,29 +650,25 @@ async def create_upload_urls(
         }
     )
 
+
 @router.post("/process-uploaded-images", response_model=Response)
 async def process_uploaded_images(
         request: dict,
+        background_tasks: BackgroundTasks,  # เพิ่ม background tasks
         current_user: User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
     event_id = request.get("eventId")
     images = request.get("images", [])
 
-    if not event_id:
+    if not event_id or not images:
         return Response(
-            message="ต้องระบุ Event ID",
+            message="ข้อมูลไม่ครบถ้วน",
             status_code=400,
             status="error"
         )
 
-    if not images:
-        return Response(
-            message="ไม่มีรูปภาพที่ระบุ",
-            status_code=400,
-            status="error"
-        )
-
+    # ตรวจสอบสิทธิ์การเข้าถึง event อย่างรวดเร็ว
     event = db.query(Event).filter(
         Event.id == event_id,
         Event.user_id == current_user.id
@@ -669,82 +681,112 @@ async def process_uploaded_images(
             status="error"
         )
 
-    # บันทึกข้อมูลรูปภาพในฐานข้อมูล
-    image_records = await save_images_to_database(images, event_id, current_user.id, db)
-
-    # สร้าง S3 client สำหรับดึงข้อมูลขนาดไฟล์
-    s3_client = boto3.client('s3',
-                             aws_access_key_id=settings.SPACES_ACCESS_KEY_ID,
-                             aws_secret_access_key=settings.SPACES_SECRET_ACCESS_KEY,
-                             endpoint_url=settings.SPACES_ENDPOINT)
-
-    preview_urls = []
-    # ตั้งค่า event ให้อยู่ในสถานะกำลังประมวลผล
+    # ตั้งค่าสถานะการประมวลผลเท่านั้น - ไม่ทำการประมวลผลจริงในขณะที่ request ยังเปิดอยู่
     event.is_processing_face_detection = True
-
-    # อัพเดทเวลาล่าสุดของ event
-    event.updated_at = datetime.utcnow()
-
-    # สร้าง task ids สำหรับติดตามความคืบหน้า
-    task_ids = []
-    total_size = 0
-
-    for image_record in image_records:
-        file_path = image_record.get("file_path")
-        file_name = image_record.get("file_name")
-        photo_id = image_record.get("photo_id")
-
-        # ดึงขนาดไฟล์จาก S3/Spaces
-        try:
-            full_path = f"{file_path}{file_name}"
-            obj = s3_client.head_object(Bucket='snapgoated', Key=full_path)
-            file_size = obj.get('ContentLength', 0)
-
-            # อัพเดทขนาดไฟล์ในเรคอร์ด Photo
-            photo = db.query(Photo).filter(Photo.id == photo_id).first()
-            if photo:
-                photo.size = file_size
-                total_size += file_size
-        except Exception as e:
-            logger.error(f"ไม่สามารถดึงขนาดไฟล์ {file_name}: {str(e)}")
-
-        # สร้าง URL สำหรับรูปภาพ preview
-        preview_url = generate_presigned_url(f"{file_path}preview/{file_name}")
-
-        preview_urls.append({
-            "id": photo_id,
-            "file_name": file_name,
-            "preview_url": preview_url,
-            "uploaded_at": image_record.get("uploaded_at", datetime.utcnow().isoformat()),
-            "size": file_size if 'file_size' in locals() else 0
-        })
-
-        # เริ่ม Celery task สำหรับประมวลผลรูปภาพแต่ละรูป
-        task = process_image_face_detection.delay(
-            file_name=file_name,
-            file_path=file_path.rstrip('/'),
-            event_id=event_id,
-            user_id=current_user.id
-        )
-        task_ids.append(task.id)
-
-    # อัพเดทขนาดไฟล์รวมของอีเวนต์
-    event.total_image_size += total_size
     db.commit()
 
-    # ส่งการตอบกลับพร้อม URL preview
+    # แบ่งรูปภาพเป็นชุดๆ ขนาดเล็ก
+    BATCH_SIZE = 50
+    image_batches = [images[i:i + BATCH_SIZE] for i in range(0, len(images), BATCH_SIZE)]
+
+    # ทำงานในพื้นหลังแทนการประมวลผลทั้งหมดในระหว่าง request
+    background_tasks.add_task(
+        process_image_batches_background,
+        image_batches,
+        event_id,
+        current_user.id
+    )
+
     return Response(
-        message="บันทึกรูปภาพเรียบร้อยและเริ่มการตรวจจับใบหน้าด้วย Celery",
-        status_code=200,
-        status="success",
+        message=f"เริ่มประมวลผลรูปภาพ {len(images)} รูปในพื้นหลัง",
         data={
             "total_images": len(images),
-            "total_size": total_size,
-            "processing_faces": True,
-            "preview_images": preview_urls,
-            "task_ids": task_ids
-        }
+            "event_id": event_id,
+            "processing_started": True
+        },
+        status="success",
+        status_code=202  # ใช้ 202 Accepted เมื่อการประมวลผลเริ่มต้นแต่ยังไม่เสร็จสมบูรณ์
     )
+
+
+async def process_image_batches_background(
+        image_batches: list,
+        event_id: int,
+        user_id: int
+):
+    """ฟังก์ชั่นสำหรับประมวลผลรูปภาพในพื้นหลัง"""
+    # สร้าง session ใหม่สำหรับการทำงานในพื้นหลัง
+    with SessionLocal() as db:
+        try:
+            # ดึงข้อมูล event
+            event = db.query(Event).filter(Event.id == event_id).first()
+            if not event:
+                logger.error(f"ไม่พบ event id {event_id}")
+                return
+
+            # ประมวลผลรูปภาพทีละชุด
+            total_processed = 0
+            total_size = 0
+
+            for batch in image_batches:
+                # บันทึกข้อมูลรูปภาพเป็นชุด
+                photos_to_add = []
+                event_photos_to_add = []
+
+                for image in batch:
+                    file_name = image.get("name")
+                    file_path = f"{user_id}/{event_id}/"
+
+                    new_photo = Photo(
+                        file_name=file_name,
+                        file_path=file_path,
+                        size=image.get("size", 0),
+                        is_detected_face=False,
+                    )
+                    photos_to_add.append(new_photo)
+
+                # บันทึกข้อมูลรูปภาพทั้งชุดในครั้งเดียว
+                db.bulk_save_objects(photos_to_add)
+                db.flush()
+
+                # สร้างความสัมพันธ์กับ event
+                for photo in photos_to_add:
+                    event_photos_to_add.append(
+                        EventPhoto(event_id=event_id, photo_id=photo.id)
+                    )
+                    total_size += photo.size
+
+                db.bulk_save_objects(event_photos_to_add)
+                db.commit()
+
+                # สั่ง Celery tasks สำหรับประมวลผลใบหน้า
+                # ใช้ queue ที่แยกออกมาเพื่อไม่ให้กระทบงานอื่น
+                task_batch = []
+                for photo in photos_to_add:
+                    task = process_image_face_detection.apply_async(
+                        args=[
+                            photo.file_name,
+                            photo.file_path.rstrip('/'),
+                            event_id,
+                            user_id
+                        ],
+                        queue='image_processing'  # ใช้ queue แยกสำหรับการประมวลผลรูปภาพ
+                    )
+                    task_batch.append(task.id)
+
+                total_processed += len(batch)
+
+                # พักเล็กน้อยระหว่างชุดเพื่อไม่ให้ใช้ทรัพยากรมากเกินไป
+                await asyncio.sleep(0.5)
+
+            # อัพเดทสถิติของ event
+            event.total_image_count += total_processed
+            event.total_image_size += total_size
+            db.commit()
+
+        except Exception as e:
+            logger.error(f"เกิดข้อผิดพลาดในการประมวลผลรูปภาพ: {str(e)}")
+            db.rollback()
 
 async def send_heartbeat(websocket: WebSocket):
     """Send periodic heartbeat to keep connection alive"""
@@ -915,248 +957,6 @@ async def save_images_to_database(images: list, event_id: int, user_id: int, db:
     db.commit()
 
     return results
-
-async def process_files_in_background(
-        files: List[UploadFile],
-        event_id: int,
-        current_user: User,
-        db_session: Session,
-        folder_id: Optional[int],
-        batch_size: int,
-        progress_logger: UploadProgressLogger,
-        connection_id: str
-):
-    websocket = active_connections.get(connection_id)
-
-    with SessionLocal() as session:
-        event = session.query(Event).filter(Event.id == event_id).first()
-        if not event:
-            print(f"Event {event_id} not found")
-            return
-
-    try:
-        print(f"Starting background processing of {len(files)} files for event {event_id}")
-
-        # Calculate optimal batch size based on available memory
-        available_memory = psutil.virtual_memory().available
-        optimal_batch_size = min(batch_size, max(1, available_memory // (100 * 1024 * 1024)))  # 100MB per file estimate
-
-        for i in range(0, len(files), optimal_batch_size):
-            batch = files[i:i + optimal_batch_size]
-            tasks = []
-
-            # Process files in parallel with rate limiting
-            semaphore = asyncio.Semaphore(3)  # Limit concurrent processing
-
-            async def process_with_semaphore(file):
-                async with semaphore:
-                    with SessionLocal() as file_db:
-                        return await process_single_file_insightface(
-                            file, event_id, current_user, file_db, folder_id,
-                            progress_logger, websocket, event
-                        )
-
-            for file in batch:
-                tasks.append(process_with_semaphore(file))
-
-            # Wait for all tasks in current batch to complete
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Process results and update progress
-            for idx, result in enumerate(batch_results):
-                file_index = i + idx
-                if file_index < len(files):
-                    filename = files[file_index].filename
-                    if isinstance(result, Exception):
-                        print(f"❌ Failed to upload {filename}: {str(result)}")
-                    else:
-                        print(f"✅ Successfully processed {filename} ({file_index + 1}/{len(files)})")
-
-            # Add small delay between batches to prevent overwhelming resources
-            await asyncio.sleep(0.5)
-
-            # Force garbage collection after each batch
-            gc.collect()
-
-            # Update event timestamp periodically
-            if i % (optimal_batch_size * 5) == 0:
-                with SessionLocal() as update_db:
-                    event_update = update_db.query(Event).filter(Event.id == event_id).first()
-                    if event_update:
-                        event_update.updated_at = datetime.utcnow()
-                        update_db.commit()
-
-        # Final event update
-        with SessionLocal() as final_db:
-            event_update = final_db.query(Event).filter(Event.id == event_id).first()
-            if event_update:
-                event_update.updated_at = datetime.utcnow()
-                final_db.commit()
-
-        if websocket and not websocket.client_disconnected:
-            await send_upload_progress(
-                websocket,
-                f"Completed processing {progress_logger.successful_files}/{len(files)} files",
-                progress_logger,
-                {"completed": True}
-            )
-    except Exception as e:
-        print(f"Background processing error: {str(e)}")
-        if websocket and not websocket.client_disconnected:
-            await send_upload_progress(
-                websocket,
-                "Error in background processing",
-                progress_logger,
-                {"error": str(e)},
-                "error"
-            )
-    finally:
-        # Clean up resources
-        for file in files:
-            if not file.file.closed:
-                await file.close()
-        gc.collect()
-
-async def process_single_file_insightface(
-        file: UploadFile,
-        event_id: int,
-        current_user: User,
-        db: Session,
-        folder_id: Optional[int],
-        progress_logger: UploadProgressLogger,
-        websocket: WebSocket,
-        event: Event
-) -> Optional[dict]:
-    try:
-        # Create file path
-        file_path = f"{current_user.id}/{event_id}"
-        if folder_id:
-            event_folder = db.query(EventFolder).filter(
-                EventFolder.event_id == event_id,
-                EventFolder.id == folder_id
-            ).first()
-            if not event_folder:
-                raise HTTPException(status_code=404, detail="ไม่พบโฟลเดอร์")
-            file_path += f"/{event_folder.name}"
-
-        file_name = check_duplicate_name(file.filename, file_path, False)
-        full_path = f"{file_path}/{file_name}"
-
-        # Read file content in chunks to manage memory
-        chunk_size = 1024 * 1024  # 1MB chunks
-        file_content = io.BytesIO()
-        total_size = 0
-
-        while chunk := await file.read(chunk_size):
-            file_content.write(chunk)
-            total_size += len(chunk)
-
-        file_content.seek(0)
-
-        # Upload original file
-        upload_files_to_spaces(file_content, full_path)
-
-        # Create and upload preview
-        try:
-            preview_bytes = io.BytesIO()
-            with Image.open(file_content) as image:
-                image = image.convert("RGB")
-                max_size = (image.width // 2, image.height // 2)
-                image.thumbnail(max_size, Image.LANCZOS)
-                image.save(preview_bytes, format="WEBP", quality=50, optimize=True)
-                preview_bytes.seek(0)
-                preview_path = f"{file_path}/preview/{file_name}"
-                upload_files_to_spaces(preview_bytes, preview_path)
-        except Exception as e:
-            logger.error(f"Error creating preview for {file_name}: {str(e)}")
-
-        # Face detection with memory optimization
-        try:
-            face_bytes = io.BytesIO()
-            file_content.seek(0)
-            face_bytes.write(file_content.getvalue())
-            face_bytes.seek(0)
-            vectors = await detect_faces_with_insightface(face_bytes, False)
-        except Exception as e:
-            logger.error(f"Error detecting faces for {file_name}: {str(e)}")
-            vectors = None
-
-        # Database operations
-        new_photo = Photo(
-            file_name=file_name,
-            file_path=f"{file_path}/",
-            size=total_size,
-            is_detected_face=(vectors is not None),
-        )
-        db.add(new_photo)
-        db.commit()
-        db.refresh(new_photo)
-
-        if vectors is not None:
-            for vector in vectors:
-                if isinstance(vector, np.ndarray):
-                    vector = vector.astype(np.float32)
-                vector_json = json.dumps(vector.tolist() if isinstance(vector, np.ndarray) else vector)
-                insert_face_vector(db, new_photo.id, vector_json)
-            db.commit()
-
-        if folder_id:
-            event_folder_photo = EventFolderPhoto(
-                event_folder_id=folder_id,
-                photo_id=new_photo.id
-            )
-            db.add(event_folder_photo)
-            event_folder.total_photo_count += 1
-            event_folder.total_photo_size += total_size
-            event_folder.updated_at = datetime.utcnow()
-        else:
-            event_photo = EventPhoto(
-                event_id=event_id,
-                photo_id=new_photo.id
-            )
-            db.add(event_photo)
-
-        event.total_image_count += 1
-        event.total_image_size += total_size
-        event.updated_at = datetime.utcnow()
-        db.commit()
-
-        progress_logger.processed_files += 1
-        progress_logger.successful_files += 1
-
-        if websocket:
-            await send_upload_progress(
-                websocket,
-                f"ประมวลผล {file_name} เสร็จสิ้น",
-                progress_logger,
-                {"file_name": file_name}
-            )
-
-        return {
-            "photo_id": new_photo.id,
-            "uploaded_at": new_photo.uploaded_at.isoformat(),
-            "file_name": new_photo.file_name,
-            "preview_url": generate_presigned_url(f"{new_photo.file_path}/preview/{new_photo.file_name}")
-        }
-
-    except Exception as e:
-        progress_logger.processed_files += 1
-        progress_logger.failed_files += 1
-        if websocket:
-            await send_upload_progress(
-                websocket,
-                f"ล้มเหลวในการประมวลผล {getattr(file, 'filename', 'unknown')}",
-                progress_logger,
-                {"error": str(e)},
-                "error"
-            )
-        logger.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์ {getattr(file, 'filename', 'unknown')}: {str(e)}")
-        return None
-    finally:
-        # Clean up resources
-        if not file.file.closed:
-            await file.close()
-        gc.collect()
 
 async def create_folder(websocket: WebSocket, event_id: int, current_user: User, db: Session, folder_name: str):
     folder_path = f"{current_user.id}/{event_id}"
